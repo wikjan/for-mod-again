@@ -48,6 +48,10 @@ namespace BotState {
     inline bool s_lastHold = false;
     inline float s_cpsCooldown = 0.0f;
     inline CCPoint s_lastTrajectoryPoint = CCPointZero;
+    inline uint32_t s_exploreRandomSeed = 1;
+    inline int s_explorationRunCount = 0;
+    inline bool s_exploreHold = false;
+    inline float s_exploreRemainingSeconds = 0.0f;
     inline LearnedSegment s_segment;
     inline std::vector<FrameDecision> s_segmentCandidate;
     inline std::vector<FrameDecision> s_segmentAttempt;
@@ -144,6 +148,32 @@ namespace BotState {
         s_hitboxNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
     }
 
+    uint32_t nextExploreRandom() {
+        s_exploreRandomSeed = s_exploreRandomSeed * 747796405u + 2891336453u;
+        uint32_t value = ((s_exploreRandomSeed >> ((s_exploreRandomSeed >> 28) + 4)) ^ s_exploreRandomSeed) * 277803737u;
+        return (value >> 22) ^ value;
+    }
+
+    void resetExplorationPattern() {
+        ++s_explorationRunCount;
+        s_exploreRandomSeed = (uint32_t)(s_attemptsCount * 314159u + s_explorationRunCount * 2718281u + 1u);
+        s_exploreHold = false;
+        s_exploreRemainingSeconds = 0.0f;
+    }
+
+    bool nextExploreHold(float dt) {
+        s_exploreRemainingSeconds -= std::max(0.0f, dt);
+        if (s_exploreRemainingSeconds <= 0.0f) {
+            s_exploreHold = (nextExploreRandom() % 100u) < 70u;
+            if (s_exploreHold) {
+                s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 1901u) / 1000.0f;
+            } else {
+                s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 401u) / 1000.0f;
+            }
+        }
+        return s_exploreHold;
+    }
+
     size_t bestFrameAtPercent(float percent) {
         if (s_bestTrajectory.empty()) return 0;
         auto it = std::lower_bound(
@@ -168,6 +198,7 @@ namespace BotState {
         s_currentTrajectory.clear();
         s_hasLastTrajectoryPoint = false;
         s_lastHold = false;
+        resetExplorationPattern();
         drawStoredTrajectory();
     }
 
@@ -396,10 +427,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             // The old path ends at the best run's frontier. Explore beyond it
             // with a varied, sparse tap pattern, storing decisions only up to
             // the configurable input-tick limit.
-            auto seed = (uint32_t)(frame * 747796405u + (BotState::s_attemptsCount + 1) * 2891336453u);
-            seed = ((seed >> ((seed >> 28) + 4)) ^ seed) * 277803737u;
-            seed = (seed >> 22) ^ seed;
-            hold = (seed % 100u) < 18u;
+            hold = BotState::nextExploreHold(dt);
             if (canStoreInput && frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         }
 
