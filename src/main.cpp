@@ -49,6 +49,7 @@ namespace BotState {
     inline bool s_hasLastTrajectoryPoint = false;
     inline bool s_lastHold = false;
     inline float s_cpsCooldown = 0.0f;
+    inline int s_naturalClickCooldownTicks = 0;
     inline float s_postDeathCooldown = 0.0f;
     inline CCPoint s_lastTrajectoryPoint = CCPointZero;
     inline uint32_t s_exploreRandomSeed = 1;
@@ -480,6 +481,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_currentFrame = 0;
         BotState::s_lastHold = false;
         BotState::s_cpsCooldown = 0.0f;
+        BotState::s_naturalClickCooldownTicks = 0;
         BotState::s_segmentPlaybackFrame = 0;
         BotState::s_segmentPlaybackActive = false;
         BotState::s_segmentPlaybackDone = false;
@@ -629,11 +631,19 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         cpsLimit = std::max(1, cpsLimit);
         float cpsTarget = std::max(1.0f, (float)cpsLimit * 0.8f);
         BotState::s_cpsCooldown = std::max(0.0f, BotState::s_cpsCooldown - dt);
-        if (hold && !BotState::s_lastHold && BotState::s_cpsCooldown > 0.0f) {
+        if (BotState::s_naturalClickCooldownTicks > 0) {
+            --BotState::s_naturalClickCooldownTicks;
+        }
+        if (hold && !BotState::s_lastHold &&
+            (BotState::s_cpsCooldown > 0.0f || BotState::s_naturalClickCooldownTicks > 0)) {
             hold = false;
         }
         bool click = hold && !BotState::s_lastHold;
-        if (click) BotState::s_cpsCooldown = 1.0f / cpsTarget;
+        if (click) {
+            BotState::s_cpsCooldown = 1.0f / cpsTarget;
+            // Add natural variation to rapid tap spacing: wait 12â€“18 game ticks.
+            BotState::s_naturalClickCooldownTicks = 12 + (int)(BotState::nextExploreRandom() % 7u);
+        }
         if (hold != BotState::s_lastHold) {
             this->handleButton(hold, 1, true);
             if (this->m_player2) this->handleButton(hold, 2, true);
@@ -684,6 +694,7 @@ class $modify(AIBotPlayer, PlayerObject) {
             if (pl->m_player2) pl->handleButton(false, 2, true);
             BotState::s_lastHold = false;
             BotState::s_cpsCooldown = 0.0f;
+            BotState::s_naturalClickCooldownTicks = 0;
         }
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
         int deathFrame = BotState::s_currentFrame;
