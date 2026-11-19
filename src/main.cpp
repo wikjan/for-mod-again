@@ -38,7 +38,8 @@ namespace BotState {
     inline int s_attemptsCount = 0;
     inline float s_lastDeathPercent = -1000.0f;
     inline int s_sameSpotDeaths = 0;
-    inline int s_score = 0;
+    inline int s_normalScore = 0;
+    inline int s_practiceScore = 0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
     inline std::vector<TrailPoint> s_currentTrajectory;
@@ -64,6 +65,11 @@ namespace BotState {
     inline CCLabelBMFont* s_trajectoryLegend = nullptr;
     inline CCLabelBMFont* s_scoreLabel = nullptr;
 
+    int inputMemoryLimit() {
+        int limit = (int)Mod::get()->getSettingValue<int64_t>("input-memory-ticks");
+        return std::clamp(limit, 30000, 250000);
+    }
+
     std::vector<FrameDecision> makeCandidate(
         std::vector<FrameDecision> const& champion,
         int deathFrame,
@@ -71,6 +77,9 @@ namespace BotState {
         uint32_t seed
     ) {
         auto candidate = champion;
+        int memoryLimit = inputMemoryLimit();
+        if ((int)candidate.size() > memoryLimit) candidate.resize(memoryLimit);
+        deathFrame = std::clamp(deathFrame, 0, memoryLimit);
         if ((int)candidate.size() < deathFrame) candidate.resize(deathFrame, {false});
         int first = std::max(0, deathFrame - mutationWindow);
         int last = std::min(deathFrame - 1, (int)candidate.size() - 1);
@@ -95,7 +104,9 @@ namespace BotState {
 
     void updateScoreLabel() {
         if (!s_scoreLabel) return;
-        s_scoreLabel->setString(("LEARNING SCORE: " + std::to_string(s_score)).c_str());
+        auto text = "SCORE NORMAL x2: " + std::to_string(s_normalScore) +
+            " | PRACTICE: " + std::to_string(s_practiceScore);
+        s_scoreLabel->setString(text.c_str());
     }
 
     void drawStoredTrajectory() {
@@ -217,7 +228,8 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_attemptsCount = 0;
         BotState::s_lastDeathPercent = -1000.0f;
         BotState::s_sameSpotDeaths = 0;
-        BotState::s_score = 0;
+        BotState::s_normalScore = 0;
+        BotState::s_practiceScore = 0;
         BotState::s_bestDistanceX = 0.0f;
         BotState::s_bestPath.clear();
         BotState::s_candidatePath.clear();
@@ -265,6 +277,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         scoreLabel->setPosition(ccp(12.0f, -27.0f));
         hudNode->addChild(scoreLabel);
         BotState::s_scoreLabel = scoreLabel;
+        BotState::updateScoreLabel();
 
         auto trajectory = CCDrawNode::create();
         trajectory->setID("ai-bot-trajectory"_spr);
@@ -368,19 +381,28 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // Keep frame zero aligned with the first input and grow before indexing.
         auto frame = BotState::s_currentFrame;
         auto& inputPath = BotState::s_trainingSegment ? BotState::s_segmentAttempt : BotState::s_currentAttempt;
-        if (frame >= (int)inputPath.size()) {
-            auto knownLength = inputPath.size();
+        int memoryLimit = BotState::inputMemoryLimit();
+        if ((int)inputPath.size() > memoryLimit) inputPath.resize(memoryLimit);
+        auto knownLength = inputPath.size();
+        bool canStoreInput = frame < memoryLimit;
+        if (canStoreInput && frame >= (int)inputPath.size()) {
             inputPath.resize(frame + 1, {false});
+        }
+
+        bool hold = false;
+        if (frame < (int)knownLength) {
+            hold = inputPath[frame].hold;
+        } else {
             // The old path ends at the best run's frontier. Explore beyond it
-            // with a varied, sparse tap pattern so the bot can discover later
-            // parts of the level instead of coasting forever without input.
+            // with a varied, sparse tap pattern, storing decisions only up to
+            // the configurable input-tick limit.
             auto seed = (uint32_t)(frame * 747796405u + (BotState::s_attemptsCount + 1) * 2891336453u);
             seed = ((seed >> ((seed >> 28) + 4)) ^ seed) * 277803737u;
             seed = (seed >> 22) ^ seed;
-            inputPath[frame].hold = frame >= (int)knownLength && (seed % 100u) < 18u;
+            hold = (seed % 100u) < 18u;
+            if (canStoreInput && frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         }
 
-        bool hold = inputPath[frame].hold;
         if (!BotState::s_trainingSegment && !BotState::s_segment.bestInputs.empty()) {
             if (!BotState::s_segmentPlaybackActive && !BotState::s_segmentPlaybackDone && progress >= BotState::s_segment.startPercent) {
                 BotState::s_segmentPlaybackActive = true;
@@ -417,8 +439,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::recordTrajectoryPoint(position, click, progress);
 
         BotState::drawPlayerHitbox(playerRect);
-        if (BotState::s_trainingSegment) BotState::s_segmentAttempt[frame].hold = hold;
-        else BotState::s_currentAttempt[frame].hold = hold;
+        if (frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         BotState::s_currentFrame++;
     }
 
@@ -473,13 +494,19 @@ class $modify(AIBotPlayer, PlayerObject) {
         float previousBest = BotState::s_trainingSegment
             ? BotState::s_segment.bestPercent : BotState::s_bestDistanceX;
         bool improved = currentPercent > previousBest;
+        bool practiceMode = pl && pl->m_isPracticeMode;
+        int scoreMultiplier = practiceMode ? 1 : 2;
+        int& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
         if (improved) {
             auto gain = currentPercent - previousBest;
-            BotState::s_score += std::max(1, (int)std::round(gain * 10.0f));
+            auto points = std::max(1, (int)std::round(gain * 10.0f)) * scoreMultiplier;
+            score = std::min(1000000, score + points);
         } else {
-            BotState::s_score = std::max(0, BotState::s_score - 1);
+            score = std::max(-1000000, score - scoreMultiplier);
         }
         BotState::updateScoreLabel();
+        int negativeScoreMutation = score < 0 ? std::min(120, -score / 2) : 0;
+        mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);
 
         if (BotState::s_trainingSegment) {
             if (improved) {

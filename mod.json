@@ -30,6 +30,14 @@
             "min": 5,
             "max": 120
         },
+        "input-memory-ticks": {
+            "name": "Maksymalna pamiec wejsc (ticki)",
+            "description": "Maksymalna liczba tickow decyzji wejscia przechowywanych dla zapamietanego click patternu.",
+            "type": "int",
+            "default": 100000,
+            "min": 30000,
+            "max": 250000
+        },
         "cps-limit": {
             "name": "Limit CPS",
             "description": "Maksymalna liczba nowych klikniec na sekunde; przytrzymanie skoku nie zuzywa kolejnych klikniec.",
