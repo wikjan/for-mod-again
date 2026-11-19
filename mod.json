@@ -68,7 +68,7 @@
             "type": "int",
             "default": 500,
             "min": 64,
-            "max": 50000
+            "max": 100000
         },
         "memory-budget-mb": {
             "name": "Budzet pamieci AI (MB)",

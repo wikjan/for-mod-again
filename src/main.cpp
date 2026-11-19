@@ -120,7 +120,7 @@ namespace BotState {
 
     void ensureNeuralNetwork() {
         int count = (int)Mod::get()->getSettingValue<int64_t>("neural-neurons");
-        count = std::clamp(count, 64, 50000);
+        count = std::clamp(count, 64, 100000);
         if ((int)s_neuralWeights.size() == count) return;
         s_neuralWeights.assign(count, {});
         s_neuralBiases.assign(count, 0.0f);
