@@ -64,11 +64,11 @@
         },
         "neural-neurons": {
             "name": "Liczba neuronow sieci AI",
-            "description": "Liczba neuronow warstwy ukrytej. Domyslnie 500; wartosci powyzej 5000 nie sa zalecane, bo zwiekszaja obciazenie CPU.",
+            "description": "Liczba neuronow warstwy ukrytej. Domyslnie 500; wartosci powyzej 25000 nie sa zalecane ze wzgledu na obciazenie CPU.",
             "type": "int",
             "default": 500,
             "min": 64,
-            "max": 10000
+            "max": 50000
         },
         "memory-budget-mb": {
             "name": "Budzet pamieci AI (MB)",

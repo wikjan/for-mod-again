@@ -120,7 +120,7 @@ namespace BotState {
 
     void ensureNeuralNetwork() {
         int count = (int)Mod::get()->getSettingValue<int64_t>("neural-neurons");
-        count = std::clamp(count, 64, 10000);
+        count = std::clamp(count, 64, 50000);
         if ((int)s_neuralWeights.size() == count) return;
         s_neuralWeights.assign(count, {});
         s_neuralBiases.assign(count, 0.0f);
@@ -203,8 +203,9 @@ namespace BotState {
         if (s_neuralSamples.empty()) return;
         ensureNeuralNetwork();
         if (improved) {
-            // Learn from at most 256 evenly spaced decisions in a record run.
-            auto stride = std::max<size_t>(1, s_neuralSamples.size() / 256);
+            // Bound the amount of work per record regardless of layer width.
+            auto sampleBudget = std::clamp<size_t>(1280000u / s_neuralWeights.size(), 16, 256);
+            auto stride = std::max<size_t>(1, s_neuralSamples.size() / sampleBudget);
             for (size_t i = 0; i < s_neuralSamples.size(); i += stride) {
                 trainNeuralSample(s_neuralSamples[i], 0.003f);
             }
