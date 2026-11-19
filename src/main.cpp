@@ -18,6 +18,7 @@ struct FrameDecision {
 struct TrailPoint {
     CCPoint position;
     bool click = false;
+    float percent = 0.0f;
 };
 
 struct LearnedSegment {
@@ -52,8 +53,6 @@ namespace BotState {
     inline bool s_trainingSegment = false;
     inline bool s_startPosTraining = false;
     inline bool s_autoPracticeTraining = false;
-    inline bool s_autoCheckpointPlaced = false;
-    inline float s_checkpointTargetPercent = 0.0f;
     inline int s_noProgressDeaths = 0;
     inline int s_segmentPlaybackFrame = 0;
     inline bool s_segmentPlaybackActive = false;
@@ -118,6 +117,42 @@ namespace BotState {
         drawPath(s_currentTrajectory, ccc4f(0.15f, 0.8f, 1.0f, 0.8f), ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
     }
 
+    void drawPlayerHitbox(CCRect const& playerRect) {
+        if (!s_hitboxNode) return;
+        s_hitboxNode->clear();
+        if (!s_hitboxNode->isVisible()) return;
+
+        auto left = playerRect.origin.x;
+        auto bottom = playerRect.origin.y;
+        auto right = left + playerRect.size.width;
+        auto top = bottom + playerRect.size.height;
+        auto color = ccc4f(0.25f, 1.0f, 0.25f, 0.9f);
+        s_hitboxNode->drawSegment(ccp(left, bottom), ccp(right, bottom), 1.5f, color);
+        s_hitboxNode->drawSegment(ccp(right, bottom), ccp(right, top), 1.5f, color);
+        s_hitboxNode->drawSegment(ccp(right, top), ccp(left, top), 1.5f, color);
+        s_hitboxNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
+    }
+
+    size_t bestFrameAtPercent(float percent) {
+        if (s_bestTrajectory.empty()) return 0;
+        auto it = std::lower_bound(
+            s_bestTrajectory.begin(), s_bestTrajectory.end(), percent,
+            [](TrailPoint const& point, float target) { return point.percent < target; }
+        );
+        return (size_t)std::distance(s_bestTrajectory.begin(), it);
+    }
+
+    void seedSegmentFromBest(float startPercent) {
+        if (!s_segment.bestInputs.empty() || s_bestPath.empty()) return;
+
+        auto startFrame = bestFrameAtPercent(startPercent);
+        if (startFrame >= s_bestPath.size()) return;
+        s_segment.bestInputs.assign(s_bestPath.begin() + startFrame, s_bestPath.end());
+        if (startFrame < s_bestTrajectory.size()) {
+            s_segment.bestTrajectory.assign(s_bestTrajectory.begin() + startFrame, s_bestTrajectory.end());
+        }
+    }
+
     void beginTrajectoryAttempt() {
         s_currentTrajectory.clear();
         s_hasLastTrajectoryPoint = false;
@@ -125,7 +160,7 @@ namespace BotState {
         drawStoredTrajectory();
     }
 
-    void recordTrajectoryPoint(CCPoint position, bool click) {
+    void recordTrajectoryPoint(CCPoint position, bool click, float percent) {
         if (s_trajectoryNode && s_hasLastTrajectoryPoint) {
             s_trajectoryNode->drawSegment(
                 s_lastTrajectoryPoint,
@@ -137,7 +172,7 @@ namespace BotState {
         if (s_trajectoryNode && click) {
             s_trajectoryNode->drawDot(position, 4.0f, ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
         }
-        s_currentTrajectory.push_back({position, click});
+        s_currentTrajectory.push_back({position, click, percent});
         s_lastTrajectoryPoint = position;
         s_hasLastTrajectoryPoint = true;
     }
@@ -193,7 +228,6 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_trainingSegment = false;
         BotState::s_startPosTraining = this->m_startPosObject != nullptr;
         BotState::s_autoPracticeTraining = false;
-        BotState::s_autoCheckpointPlaced = false;
         BotState::s_noProgressDeaths = 0;
         BotState::s_segmentPlaybackFrame = 0;
         BotState::s_segmentPlaybackActive = false;
@@ -261,7 +295,6 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_segmentPlaybackDone = false;
 
         bool checkpointRespawn = this->m_isPracticeMode && this->m_checkpointArray && this->m_checkpointArray->count() > 0;
-        if (BotState::s_autoPracticeTraining && BotState::s_autoCheckpointPlaced) checkpointRespawn = true;
         BotState::s_trainingSegment = BotState::s_startPosTraining || checkpointRespawn;
         if (BotState::s_trainingSegment) {
             float startPercent = this->getCurrentPercent();
@@ -270,6 +303,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             }
             BotState::s_segment.startPercent = startPercent;
             BotState::s_segment.bestPercent = std::max(BotState::s_segment.bestPercent, startPercent);
+            BotState::seedSegmentFromBest(startPercent);
             BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
                 ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
         } else {
@@ -290,6 +324,28 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         if (!this->m_player1 || this->m_player1->m_isDead) return;
 
         float progress = this->getCurrentPercent();
+        if (this->m_isPracticeMode &&
+            Mod::get()->getSettingValue<bool>("exit-practice-at-percent")) {
+            int exitPercent = (int)Mod::get()->getSettingValue<int64_t>("practice-exit-percent");
+            exitPercent = std::clamp(exitPercent, 1, 100);
+            if ((float)exitPercent > BotState::s_bestDistanceX &&
+                progress >= (float)exitPercent && progress > BotState::s_bestDistanceX) {
+                // Keep the newly reached full-level pattern, then leave
+                // Practice Mode and restart from zero for the next attempt.
+                BotState::s_bestDistanceX = progress;
+                BotState::s_bestPath = BotState::s_currentAttempt;
+                BotState::s_candidatePath = BotState::s_bestPath;
+                BotState::s_bestTrajectory = BotState::s_currentTrajectory;
+                BotState::drawStoredTrajectory();
+                this->togglePracticeMode(false);
+                BotState::s_autoPracticeTraining = false;
+                BotState::s_trainingSegment = false;
+                BotState::s_segmentPlaybackActive = false;
+                BotState::s_segmentPlaybackDone = false;
+                this->resetLevelFromStart();
+                return;
+            }
+        }
         if (BotState::s_startPosTraining && !BotState::s_trainingSegment) {
             BotState::s_trainingSegment = true;
             BotState::s_segment.startPercent = progress;
@@ -297,21 +353,6 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
                 ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
             BotState::s_currentFrame = 0;
-        }
-
-        if (BotState::s_autoPracticeTraining && !BotState::s_autoCheckpointPlaced && progress >= BotState::s_checkpointTargetPercent) {
-            this->createCheckpoint();
-            BotState::s_autoCheckpointPlaced = true;
-            BotState::s_trainingSegment = true;
-            if (std::abs(BotState::s_segment.startPercent - progress) > 1.0f) {
-                BotState::s_segment = {};
-            }
-            BotState::s_segment.startPercent = progress;
-            BotState::s_segment.bestPercent = progress;
-            BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
-                ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
-            BotState::s_currentFrame = 0;
-            BotState::beginTrajectoryAttempt();
         }
 
         // Keep frame zero aligned with the first input and grow before indexing.
@@ -363,22 +404,9 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         auto playerRect = m_player1->getObjectRect();
         auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
                             playerRect.origin.y + playerRect.size.height * 0.5f);
-        BotState::recordTrajectoryPoint(position, click);
+        BotState::recordTrajectoryPoint(position, click, progress);
 
-        if (BotState::s_hitboxNode) {
-            BotState::s_hitboxNode->clear();
-            if (BotState::s_hitboxNode->isVisible()) {
-                auto left = playerRect.origin.x;
-                auto bottom = playerRect.origin.y;
-                auto right = left + playerRect.size.width;
-                auto top = bottom + playerRect.size.height;
-                auto color = ccc4f(0.25f, 1.0f, 0.25f, 0.9f);
-                BotState::s_hitboxNode->drawSegment(ccp(left, bottom), ccp(right, bottom), 1.5f, color);
-                BotState::s_hitboxNode->drawSegment(ccp(right, bottom), ccp(right, top), 1.5f, color);
-                BotState::s_hitboxNode->drawSegment(ccp(right, top), ccp(left, top), 1.5f, color);
-                BotState::s_hitboxNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
-            }
-        }
+        BotState::drawPlayerHitbox(playerRect);
         if (BotState::s_trainingSegment) BotState::s_segmentAttempt[frame].hold = hold;
         else BotState::s_currentAttempt[frame].hold = hold;
         BotState::s_currentFrame++;
@@ -413,6 +441,25 @@ class $modify(AIBotPlayer, PlayerObject) {
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
         int deathFrame = BotState::s_currentFrame;
         int mutationWindow = (int)Mod::get()->getSettingValue<int64_t>("learning-rate");
+        bool hasPracticeCheckpoint = pl && pl->m_isPracticeMode && pl->m_checkpointArray &&
+            pl->m_checkpointArray->count() > 0;
+        if (hasPracticeCheckpoint) {
+            if (std::abs(currentPercent - BotState::s_lastDeathPercent) <= 0.25f) {
+                BotState::s_sameSpotDeaths++;
+            } else {
+                BotState::s_sameSpotDeaths = 1;
+            }
+            BotState::s_lastDeathPercent = currentPercent;
+
+            // After five deaths at the same Practice checkpoint, widen the
+            // mutation window so the next attempt changes its click pattern.
+            if (BotState::s_sameSpotDeaths >= 5) {
+                mutationWindow = std::min(120, mutationWindow * 2);
+            }
+        } else {
+            BotState::s_sameSpotDeaths = 0;
+            BotState::s_lastDeathPercent = -1000.0f;
+        }
         float previousBest = BotState::s_trainingSegment
             ? BotState::s_segment.bestPercent : BotState::s_bestDistanceX;
         bool improved = currentPercent > previousBest;
@@ -438,21 +485,6 @@ class $modify(AIBotPlayer, PlayerObject) {
                 (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
             );
 
-            // Once the trained section beats the previous full-run record,
-            // leave Practice Mode and test the saved inputs in a full run.
-            bool segmentMastered = BotState::s_autoPracticeTraining &&
-                BotState::s_segment.bestPercent >= BotState::s_bestDistanceX + 2.0f;
-            if (segmentMastered && pl) {
-                pl->togglePracticeMode(false);
-                BotState::s_autoPracticeTraining = false;
-                BotState::s_autoCheckpointPlaced = false;
-                BotState::s_trainingSegment = false;
-                BotState::s_segmentPlaybackActive = false;
-                if (Mod::get()->getSettingValue<bool>("auto-reset")) {
-                    pl->resetLevelFromStart();
-                }
-                return;
-            }
         }
         else {
             if (improved) {
@@ -471,35 +503,28 @@ class $modify(AIBotPlayer, PlayerObject) {
                 (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
             );
 
-            // After five deaths without a new record, add a Practice
-            // checkpoint just before the stuck section and train from there.
+            // After five deaths without a new record, enter Practice Mode
+            // from zero and replay the remembered best click pattern.
             if (pl && !pl->m_isPracticeMode && BotState::s_noProgressDeaths >= 5) {
                 pl->togglePracticeMode(true);
                 BotState::s_autoPracticeTraining = true;
-                BotState::s_autoCheckpointPlaced = false;
-                BotState::s_checkpointTargetPercent = std::max(0.0f, BotState::s_bestDistanceX - 2.0f);
                 BotState::s_noProgressDeaths = 0;
             }
         }
 
-        if (pl && pl->m_isPracticeMode && pl->m_checkpointArray && pl->m_checkpointArray->count() > 0 &&
-            Mod::get()->getSettingValue<bool>("remove-stuck-checkpoints")) {
-            if (std::abs(currentPercent - BotState::s_lastDeathPercent) <= 0.25f) {
-                BotState::s_sameSpotDeaths++;
-            } else {
-                BotState::s_sameSpotDeaths = 1;
-            }
-            BotState::s_lastDeathPercent = currentPercent;
-
-            if (BotState::s_sameSpotDeaths >= 20) {
-                // In Geode's binding, false removes the newest checkpoint.
-                pl->removeCheckpoint(false);
-                BotState::s_sameSpotDeaths = 0;
-                BotState::s_lastDeathPercent = -1000.0f;
-                if (BotState::s_autoPracticeTraining) {
-                    BotState::s_autoPracticeTraining = false;
-                    BotState::s_autoCheckpointPlaced = false;
-                    BotState::s_trainingSegment = false;
+        if (pl && pl->m_isPracticeMode && pl->m_checkpointArray && pl->m_checkpointArray->count() > 0) {
+            if (Mod::get()->getSettingValue<bool>("remove-stuck-checkpoints")) {
+                int deathLimit = (int)Mod::get()->getSettingValue<int64_t>("same-spot-death-limit");
+                deathLimit = std::max(1, deathLimit);
+                if (BotState::s_sameSpotDeaths >= deathLimit) {
+                    // In Geode's binding, false removes the newest checkpoint.
+                    pl->removeCheckpoint(false);
+                    BotState::s_sameSpotDeaths = 0;
+                    BotState::s_lastDeathPercent = -1000.0f;
+                    if (BotState::s_autoPracticeTraining) {
+                        BotState::s_autoPracticeTraining = false;
+                        BotState::s_trainingSegment = false;
+                    }
                 }
             }
         } else {
@@ -522,6 +547,13 @@ class $modify(AIBotPlayer, PlayerObject) {
 class $modify(AIBotPauseLayer, PauseLayer) {
     void customSetup() {
         PauseLayer::customSetup();
+
+        // postUpdate stops while the level is paused. Rebuild retained overlays
+        // when the pause menu opens so the cyan trail and current hitbox remain visible.
+        BotState::drawStoredTrajectory();
+        if (auto playLayer = PlayLayer::get(); playLayer && playLayer->m_player1) {
+            BotState::drawPlayerHitbox(playLayer->m_player1->getObjectRect());
+        }
 
         auto menu = this->getChildByID("right-button-menu");
         if (!menu) menu = this->getChildByID("bottom-button-menu");

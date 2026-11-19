@@ -52,9 +52,31 @@
         },
         "remove-stuck-checkpoints": {
             "name": "Usuwaj zablokowany checkpoint",
-            "description": "Usuwa najnowszy checkpoint Practice Mode po 20 zgonach w prawie tym samym miejscu.",
+            "description": "Usuwa najnowszy checkpoint Practice Mode po ustawionej liczbie zgonow w prawie tym samym miejscu.",
             "type": "bool",
             "default": true
+        },
+        "same-spot-death-limit": {
+            "name": "Limit zgonow w tym samym miejscu",
+            "description": "Liczba zgonow w prawie tym samym miejscu przed usunieciem najnowszego checkpointu.",
+            "type": "int",
+            "default": 20,
+            "min": 1,
+            "max": 1000
+        },
+        "exit-practice-at-percent": {
+            "name": "Wylacz Practice Mode po procencie",
+            "description": "Po przekroczeniu ustawionego procentu wyjdz z Practice Mode i zrestartuj poziom od poczatku, jesli wynik przewyzsza rekord.",
+            "type": "bool",
+            "default": false
+        },
+        "practice-exit-percent": {
+            "name": "Procent wyjscia z Practice Mode",
+            "description": "Procent poziomu wymagany do wyjscia z Practice Mode. Wynik musi byc tez wyzszy od rekordu.",
+            "type": "int",
+            "default": 50,
+            "min": 1,
+            "max": 100
         },
         "auto-reset": {
             "name": "Szybki restart po smierci",
