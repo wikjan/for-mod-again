@@ -320,16 +320,26 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // Keep the HUD in sync when the bot is toggled from the pause menu.
         BotState::refreshIndicator();
 
-        if (!BotState::s_enabled) return;
         if (!this->m_player1 || this->m_player1->m_isDead) return;
 
         float progress = this->getCurrentPercent();
+        if (!BotState::s_enabled) {
+            // Visual tracking must continue when the AI is turned off from
+            // the pause menu; only input control is disabled in this state.
+            auto playerRect = this->m_player1->getObjectRect();
+            auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
+                                playerRect.origin.y + playerRect.size.height * 0.5f);
+            BotState::recordTrajectoryPoint(position, false, progress);
+            BotState::drawPlayerHitbox(playerRect);
+            return;
+        }
+
         if (this->m_isPracticeMode &&
             Mod::get()->getSettingValue<bool>("exit-practice-at-percent")) {
             int exitPercent = (int)Mod::get()->getSettingValue<int64_t>("practice-exit-percent");
             exitPercent = std::clamp(exitPercent, 1, 100);
-            if ((float)exitPercent > BotState::s_bestDistanceX &&
-                progress >= (float)exitPercent && progress > BotState::s_bestDistanceX) {
+            float exitTarget = std::max((float)exitPercent, BotState::s_bestDistanceX + 0.01f);
+            if (progress >= exitTarget) {
                 // Keep the newly reached full-level pattern, then leave
                 // Practice Mode and restart from zero for the next attempt.
                 BotState::s_bestDistanceX = progress;
