@@ -1,5 +1,6 @@
 #include <Geode/Geode.hpp>
 #include <Geode/modify/PlayLayer.hpp>
+#include <Geode/modify/GJBaseGameLayer.hpp>
 #include <Geode/modify/PlayerObject.hpp>
 #include <Geode/modify/PauseLayer.hpp>
 #include <Geode/binding/StartPosObject.hpp>
@@ -30,11 +31,16 @@ struct LearnedSegment {
 
 namespace BotState {
     inline bool s_enabled = false;
+    inline bool s_practiceMode = false;
     inline int s_currentFrame = 0;
     inline std::vector<FrameDecision> s_bestPath;
     inline std::vector<FrameDecision> s_candidatePath;
     inline std::vector<FrameDecision> s_currentAttempt;
     inline float s_bestDistanceX = 0.0f;
+    inline std::vector<FrameDecision> s_bestPracticePath;
+    inline std::vector<FrameDecision> s_candidatePracticePath;
+    inline std::vector<TrailPoint> s_bestPracticeTrajectory;
+    inline float s_bestPracticeDistanceX = 0.0f;
     inline int s_attemptsCount = 0;
     inline float s_lastDeathPercent = -1000.0f;
     inline int s_sameSpotDeaths = 0;
@@ -43,7 +49,9 @@ namespace BotState {
     inline constexpr double s_scoreLimit = 2147483647.0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
+    inline CCDrawNode* s_hazardNode = nullptr;
     inline CCDrawNode* s_predictionNode = nullptr;
+    inline std::vector<CCRect> s_hazardRects;
     inline std::vector<TrailPoint> s_currentTrajectory;
     inline std::vector<TrailPoint> s_bestTrajectory;
     inline bool s_hasLastTrajectoryPoint = false;
@@ -56,6 +64,8 @@ namespace BotState {
     inline int s_explorationRunCount = 0;
     inline bool s_exploreHold = false;
     inline float s_exploreRemainingSeconds = 0.0f;
+    inline int s_startDelayTicks = 0;
+    inline bool s_allowPracticeMemoryGuess = false;
     inline LearnedSegment s_segment;
     inline std::vector<FrameDecision> s_segmentCandidate;
     inline std::vector<FrameDecision> s_segmentAttempt;
@@ -72,6 +82,7 @@ namespace BotState {
     inline CCLabelBMFont* s_indicatorLabel = nullptr;
     inline CCLabelBMFont* s_trajectoryLegend = nullptr;
     inline CCLabelBMFont* s_scoreLabel = nullptr;
+    inline CCLabelBMFont* s_deathAnalysisLabel = nullptr;
 
     int inputMemoryLimit() {
         int limit = (int)Mod::get()->getSettingValue<int64_t>("input-memory-ticks");
@@ -81,7 +92,7 @@ namespace BotState {
         // Reserve for the best/current/candidate input and trajectory vectors,
         // including their temporary copies during a new best run.
         constexpr size_t estimatedBytesPerTick =
-            8 * sizeof(FrameDecision) + 4 * sizeof(TrailPoint);
+            10 * sizeof(FrameDecision) + 5 * sizeof(TrailPoint);
         auto budgetTicks = ((size_t)budgetMb * 1024u * 1024u) / estimatedBytesPerTick;
         return std::max(1, std::min(limit, (int)budgetTicks));
     }
@@ -99,7 +110,12 @@ namespace BotState {
         deathFrame = std::clamp(deathFrame, 0, memoryLimit);
         if ((int)candidate.size() < deathFrame) candidate.resize(deathFrame, {false});
         protectedFrame = std::clamp(protectedFrame, 0, memoryLimit);
-        int first = std::max(protectedFrame, deathFrame - mutationWindow);
+        // If the current attempt dies before the champion's record point,
+        // mutating only after that point yields an empty range and repeats the
+        // same failed pattern forever. Keep the champion itself intact, but
+        // let this candidate explore the last window before its own death.
+        int safePrefix = protectedFrame <= deathFrame ? protectedFrame : 0;
+        int first = std::max(safePrefix, deathFrame - mutationWindow);
         int last = std::min(deathFrame - 1, (int)candidate.size() - 1);
         int span = last - first + 1;
         if (span <= 0) return candidate;
@@ -109,7 +125,8 @@ namespace BotState {
             uint32_t value = ((seed >> ((seed >> 28) + 4)) ^ seed) * 277803737u;
             return (value >> 22) ^ value;
         };
-        int flips = 1 + (int)(nextRandom() % (uint32_t)std::min(2, span));
+        int maxFlips = std::min(span, std::max(2, span / 12));
+        int flips = 1 + (int)(nextRandom() % (uint32_t)maxFlips);
         std::vector<bool> changed((size_t)span, false);
         for (int i = 0; i < flips; ++i) {
             int offset = (int)(nextRandom() % (uint32_t)span);
@@ -150,11 +167,16 @@ namespace BotState {
         };
 
         drawPath(s_bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
-        drawPath(s_segment.bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
+        drawPath(s_bestPracticeTrajectory, ccc4f(0.2f, 0.95f, 0.4f, 0.9f), ccc4f(0.45f, 1.0f, 0.55f, 1.0f));
+        drawPath(s_segment.bestTrajectory, ccc4f(0.2f, 0.75f, 0.95f, 0.9f), ccc4f(0.45f, 0.85f, 1.0f, 1.0f));
         drawPath(s_currentTrajectory, ccc4f(0.15f, 0.8f, 1.0f, 0.8f), ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
         if (!s_bestTrajectory.empty()) {
             s_trajectoryNode->drawDot(s_bestTrajectory.back().position, 6.0f,
                                       ccc4f(1.0f, 1.0f, 1.0f, 1.0f));
+        }
+        if (!s_bestPracticeTrajectory.empty()) {
+            s_trajectoryNode->drawDot(s_bestPracticeTrajectory.back().position, 6.0f,
+                                      ccc4f(0.2f, 1.0f, 0.4f, 1.0f));
         }
     }
 
@@ -174,6 +196,23 @@ namespace BotState {
         s_hitboxNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
     }
 
+    void drawHazardHitboxes() {
+        if (!s_hazardNode) return;
+        s_hazardNode->clear();
+        if (!s_hazardNode->isVisible()) return;
+        auto color = ccc4f(1.0f, 0.15f, 0.12f, 0.9f);
+        for (auto const& rect : s_hazardRects) {
+            auto left = rect.origin.x;
+            auto bottom = rect.origin.y;
+            auto right = left + rect.size.width;
+            auto top = bottom + rect.size.height;
+            s_hazardNode->drawSegment(ccp(left, bottom), ccp(right, bottom), 1.5f, color);
+            s_hazardNode->drawSegment(ccp(right, bottom), ccp(right, top), 1.5f, color);
+            s_hazardNode->drawSegment(ccp(right, top), ccp(left, top), 1.5f, color);
+            s_hazardNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
+        }
+    }
+
     void drawPredictedTrajectory() {
         if (!s_predictionNode) return;
         s_predictionNode->clear();
@@ -185,7 +224,7 @@ namespace BotState {
         auto p2 = s_currentTrajectory[count - 1].position;
         constexpr float tickRate = 60.0f;
         int predictionSteps = (int)Mod::get()->getSettingValue<int64_t>("prediction-steps");
-        predictionSteps = std::clamp(predictionSteps, 5, 50);
+        predictionSteps = std::clamp(predictionSteps, 5, 2500);
         auto velocity = ccp((p2.x - p1.x) * tickRate, (p2.y - p1.y) * tickRate);
         auto acceleration = ccp(
             (p2.x - 2.0f * p1.x + p0.x) * tickRate * tickRate,
@@ -207,7 +246,9 @@ namespace BotState {
         // the primary forecast. Align the stored path to the icon's current
         // position so the overlay follows the live run rather than the old run.
         auto const& memory = s_trainingSegment && !s_segment.bestTrajectory.empty()
-            ? s_segment.bestTrajectory : s_bestTrajectory;
+            ? s_segment.bestTrajectory
+            : (s_practiceMode && !s_bestPracticeTrajectory.empty()
+                ? s_bestPracticeTrajectory : s_bestTrajectory);
         if (!memory.empty()) {
             auto currentPercent = s_currentTrajectory.back().percent;
             auto it = std::lower_bound(memory.begin(), memory.end(), currentPercent,
@@ -222,14 +263,20 @@ namespace BotState {
                     s_predictionNode->drawSegment(previousMemory, nextMemory, 2.0f, color);
                     previousMemory = nextMemory;
                 }
-                if (drawn > 0) {
-                    s_predictionNode->drawDot(previousMemory, 3.5f, color);
-                    return;
-                }
+                if (drawn > 0) previous = previousMemory;
             }
         }
 
-        for (int step = 1; step <= predictionSteps; ++step) {
+        // If the remembered route ends before the configured horizon, extend
+        // the preview with the current motion estimate instead of truncating it.
+        int memorySteps = 0;
+        if (!memory.empty()) {
+            auto currentPercent = s_currentTrajectory.back().percent;
+            auto it = std::lower_bound(memory.begin(), memory.end(), currentPercent,
+                [](TrailPoint const& point, float target) { return point.percent < target; });
+            if (it != memory.end()) memorySteps = (int)std::distance(it, memory.end()) - 1;
+        }
+        for (int step = std::max(1, memorySteps + 1); step <= predictionSteps; ++step) {
             auto time = (float)step / tickRate;
             auto next = ccp(
                 p2.x + velocity.x * time + 0.5f * acceleration.x * time * time,
@@ -252,6 +299,14 @@ namespace BotState {
         s_exploreRandomSeed = (uint32_t)(s_attemptsCount * 314159u + s_explorationRunCount * 2718281u + 1u);
         s_exploreHold = false;
         s_exploreRemainingSeconds = 0.0f;
+        s_startDelayTicks = 0;
+        bool hasChampion = s_practiceMode
+            ? !s_bestPracticePath.empty() : !s_bestPath.empty();
+        if (!hasChampion && nextExploreRandom() % 100u < 20u) {
+            s_startDelayTicks = 12 + (int)(nextExploreRandom() % 49u);
+        }
+        s_allowPracticeMemoryGuess = !s_practiceMode &&
+            !s_bestPracticePath.empty() && nextExploreRandom() % 100u < 70u;
     }
 
     bool nextExploreHold(float dt) {
@@ -289,12 +344,13 @@ namespace BotState {
         CCPoint position,
         std::vector<FrameDecision> const& inputs,
         std::vector<TrailPoint> const& trajectory,
-        bool& guessedHold
+        bool& guessedHold,
+        float maxDistance = 96.0f
     ) {
         auto count = std::min(inputs.size(), trajectory.size());
         if (count < 2) return false;
 
-        float closestDistanceSquared = 96.0f * 96.0f;
+        float closestDistanceSquared = maxDistance * maxDistance;
         size_t closest = count;
         for (size_t i = 0; i < count; ++i) {
             auto dx = trajectory[i].position.x - position.x;
@@ -395,6 +451,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         if (!PlayLayer::init(level, useReplay, dontCreateObjects)) return false;
 
         BotState::s_enabled = Mod::get()->getSettingValue<bool>("bot-enabled");
+        BotState::s_practiceMode = this->m_isPracticeMode;
         BotState::s_currentFrame = 0;
         BotState::s_attemptsCount = 0;
         BotState::s_postDeathCooldown = 0.0f;
@@ -403,9 +460,14 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_normalScore = 0;
         BotState::s_practiceScore = 0;
         BotState::s_bestDistanceX = 0.0f;
+        BotState::s_bestPracticeDistanceX = 0.0f;
         BotState::s_bestPath.clear();
         BotState::s_candidatePath.clear();
+        BotState::s_bestPracticePath.clear();
+        BotState::s_candidatePracticePath.clear();
         BotState::s_bestTrajectory.clear();
+        BotState::s_bestPracticeTrajectory.clear();
+        BotState::s_hazardRects.clear();
         BotState::s_segment = {};
         BotState::s_segmentAttempt.clear();
         BotState::s_segmentCandidate.clear();
@@ -436,7 +498,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         hudNode->addChild(label);
         BotState::s_indicatorLabel = label;
 
-        auto legend = CCLabelBMFont::create("TRAIL: red=click gold=best white=memory-end cyan=current purple=prediction", "chatFont.fnt");
+        auto legend = CCLabelBMFont::create("TRAIL: red=click gold=normal-best green=practice-best cyan=current purple=prediction", "chatFont.fnt");
         legend->setScale(0.34f);
         legend->setAnchorPoint(ccp(0.0f, 0.5f));
         legend->setPosition(ccp(12.0f, -15.0f));
@@ -450,6 +512,13 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         hudNode->addChild(scoreLabel);
         BotState::s_scoreLabel = scoreLabel;
         BotState::updateScoreLabel();
+
+        auto deathAnalysis = CCLabelBMFont::create("DEATH ANALYSIS: waiting for a death", "chatFont.fnt");
+        deathAnalysis->setScale(0.34f);
+        deathAnalysis->setAnchorPoint(ccp(0.0f, 0.5f));
+        deathAnalysis->setPosition(ccp(12.0f, -39.0f));
+        hudNode->addChild(deathAnalysis);
+        BotState::s_deathAnalysisLabel = deathAnalysis;
 
         auto trajectory = CCDrawNode::create();
         trajectory->setID("ai-bot-trajectory"_spr);
@@ -468,6 +537,12 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         hitbox->setVisible(Mod::get()->getSettingValue<bool>("show-hitbox"));
         BotState::s_hitboxNode = hitbox;
         if (this->m_objectLayer) this->m_objectLayer->addChild(hitbox, 1001);
+
+        auto hazards = CCDrawNode::create();
+        hazards->setID("ai-bot-hazard-hitboxes"_spr);
+        hazards->setVisible(Mod::get()->getSettingValue<bool>("show-hazards"));
+        BotState::s_hazardNode = hazards;
+        if (this->m_objectLayer) this->m_objectLayer->addChild(hazards, 1001);
         BotState::beginTrajectoryAttempt();
 
         this->addChild(hudNode);
@@ -478,6 +553,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
 
     void resetLevel() {
         PlayLayer::resetLevel();
+        BotState::s_practiceMode = this->m_isPracticeMode;
         BotState::s_currentFrame = 0;
         BotState::s_lastHold = false;
         BotState::s_cpsCooldown = 0.0f;
@@ -499,8 +575,15 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
                 ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
         } else {
-            BotState::s_currentAttempt = BotState::s_candidatePath.empty()
+            auto const& practiceSource = BotState::s_candidatePracticePath.empty()
+                ? BotState::s_bestPracticePath : BotState::s_candidatePracticePath;
+            auto const& normalSource = BotState::s_candidatePath.empty()
                 ? BotState::s_bestPath : BotState::s_candidatePath;
+            if (this->m_isPracticeMode && !practiceSource.empty()) {
+                BotState::s_currentAttempt = practiceSource;
+            } else {
+                BotState::s_currentAttempt = normalSource;
+            }
         }
         this->handleButton(false, 1, true);
         if (this->m_player2) this->handleButton(false, 2, true);
@@ -509,6 +592,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+        BotState::s_practiceMode = this->m_isPracticeMode;
 
         // Keep the HUD in sync when the bot is toggled from the pause menu.
         BotState::refreshIndicator();
@@ -527,6 +611,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
                                 playerRect.origin.y + playerRect.size.height * 0.5f);
             BotState::recordTrajectoryPoint(position, false, progress);
             BotState::drawPlayerHitbox(playerRect);
+            BotState::drawHazardHitboxes();
             BotState::drawPredictedTrajectory();
             return;
         }
@@ -555,6 +640,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             if (progress >= exitTarget) {
                 // Keep the newly reached full-level pattern, then leave
                 // Practice Mode and restart from zero for the next attempt.
+                if (progress > BotState::s_bestPracticeDistanceX) {
+                    BotState::s_bestPracticeDistanceX = progress;
+                    BotState::s_bestPracticePath = BotState::s_currentAttempt;
+                    BotState::s_bestPracticeTrajectory = BotState::s_currentTrajectory;
+                }
                 BotState::s_bestDistanceX = progress;
                 BotState::s_bestPath = BotState::s_currentAttempt;
                 BotState::s_candidatePath = BotState::s_bestPath;
@@ -598,15 +688,28 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             // its next click decision. Use a varied pattern when memory has no
             // nearby match. Decisions are retained up to the tick limit.
             hold = BotState::nextExploreHold(dt);
+            bool startDelayActive = frame < BotState::s_startDelayTicks;
+            if (startDelayActive) hold = false;
             auto const& guessInputs = BotState::s_trainingSegment && !BotState::s_segment.bestInputs.empty()
-                ? BotState::s_segment.bestInputs : BotState::s_bestPath;
+                ? BotState::s_segment.bestInputs
+                : (this->m_isPracticeMode && !BotState::s_bestPracticePath.empty()
+                    ? BotState::s_bestPracticePath : BotState::s_bestPath);
             auto const& guessTrajectory = BotState::s_trainingSegment && !BotState::s_segment.bestTrajectory.empty()
-                ? BotState::s_segment.bestTrajectory : BotState::s_bestTrajectory;
+                ? BotState::s_segment.bestTrajectory
+                : (this->m_isPracticeMode && !BotState::s_bestPracticeTrajectory.empty()
+                    ? BotState::s_bestPracticeTrajectory : BotState::s_bestTrajectory);
             bool rememberedGuess = false;
-            if (!BotState::guessFromSimilarMemory(position, guessInputs, guessTrajectory, rememberedGuess)) {
+            bool usedPracticeGuess = false;
+            if (!startDelayActive && BotState::s_allowPracticeMemoryGuess) {
+                usedPracticeGuess = BotState::guessFromSimilarMemory(
+                    position, BotState::s_bestPracticePath,
+                    BotState::s_bestPracticeTrajectory, rememberedGuess, 160.0f);
+            }
+            if (!startDelayActive && !usedPracticeGuess &&
+                !BotState::guessFromSimilarMemory(position, guessInputs, guessTrajectory, rememberedGuess)) {
                 rememberedGuess = hold;
             }
-            hold = rememberedGuess;
+            if (!startDelayActive) hold = rememberedGuess;
             if (canStoreInput && frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         }
 
@@ -653,6 +756,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::recordTrajectoryPoint(position, click, progress);
 
         BotState::drawPlayerHitbox(playerRect);
+        BotState::drawHazardHitboxes();
         BotState::drawPredictedTrajectory();
         if (frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         BotState::s_currentFrame++;
@@ -666,11 +770,37 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_indicatorLabel = nullptr;
         BotState::s_trajectoryLegend = nullptr;
         BotState::s_scoreLabel = nullptr;
+        BotState::s_deathAnalysisLabel = nullptr;
         BotState::s_trajectoryNode = nullptr;
         BotState::s_hitboxNode = nullptr;
+        BotState::s_hazardNode = nullptr;
+        BotState::s_hazardRects.clear();
         BotState::s_predictionNode = nullptr;
         BotState::s_hasLastTrajectoryPoint = false;
         PlayLayer::onExit();
+    }
+};
+
+// Cache the collision rectangles Geometry Dash checks for spikes, saws and
+// other lethal objects around player one. The drawing and learner can then
+// use the same geometry that the game uses for collision checks.
+class $modify(AIBotBaseGameLayer, GJBaseGameLayer) {
+    void collisionCheckObjects(PlayerObject* player, std::vector<GameObject*>* objects, int count, float dt) {
+        auto play = PlayLayer::get();
+        if (play && player == play->m_player1) {
+            BotState::s_hazardRects.clear();
+            if (objects) {
+                for (int i = 0; i < count; ++i) {
+                    auto* object = (*objects)[i];
+                    if (!object) continue;
+                    auto type = object->m_objectType;
+                    if (type == GameObjectType::Hazard || type == GameObjectType::AnimatedHazard) {
+                        BotState::s_hazardRects.push_back(object->getObjectRect());
+                    }
+                }
+            }
+        }
+        GJBaseGameLayer::collisionCheckObjects(player, objects, count, dt);
     }
 };
 
@@ -725,10 +855,11 @@ class $modify(AIBotPlayer, PlayerObject) {
             BotState::s_sameSpotDeaths = 0;
             BotState::s_lastDeathPercent = -1000.0f;
         }
-        float previousBest = BotState::s_trainingSegment
-            ? BotState::s_segment.bestPercent : BotState::s_bestDistanceX;
-        bool improved = currentPercent > previousBest;
         bool practiceMode = pl && pl->m_isPracticeMode;
+        float previousBest = BotState::s_trainingSegment
+            ? BotState::s_segment.bestPercent
+            : (practiceMode ? BotState::s_bestPracticeDistanceX : BotState::s_bestDistanceX);
+        bool improved = currentPercent > previousBest;
         double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
         auto deathPenalty = (int)Mod::get()->getSettingValue<int64_t>("learning-death-penalty");
         deathPenalty = std::clamp(deathPenalty, 0, 1000000);
@@ -736,6 +867,14 @@ class $modify(AIBotPlayer, PlayerObject) {
         BotState::updateScoreLabel();
         int negativeScoreMutation = score < 0 ? std::min(120, (int)(-score / 2.0)) : 0;
         mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);
+
+        if (BotState::s_deathAnalysisLabel) {
+            auto analysis = "DEATH " + std::to_string(std::round(currentPercent * 10.0f) / 10.0f) +
+                "% | SAME SPOT " + std::to_string(BotState::s_sameSpotDeaths) +
+                " | HAZARDS " + std::to_string(BotState::s_hazardRects.size()) +
+                " | MUTATION " + std::to_string(mutationWindow) + " TICKS";
+            BotState::s_deathAnalysisLabel->setString(analysis.c_str());
+        }
 
         if (BotState::s_trainingSegment) {
             if (improved) {
@@ -753,6 +892,22 @@ class $modify(AIBotPlayer, PlayerObject) {
                 (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
             );
 
+        }
+        else if (practiceMode) {
+            if (improved) {
+                BotState::s_bestPracticeDistanceX = currentPercent;
+                BotState::s_bestPracticePath = BotState::s_currentAttempt;
+                BotState::s_bestPracticeTrajectory = BotState::s_currentTrajectory;
+                BotState::drawStoredTrajectory();
+            }
+            auto const& champion = BotState::s_bestPracticePath.empty()
+                ? BotState::s_currentAttempt : BotState::s_bestPracticePath;
+            auto protectedFrame = (int)BotState::frameAtPercent(
+                BotState::s_bestPracticeTrajectory, BotState::s_bestPracticeDistanceX);
+            BotState::s_candidatePracticePath = BotState::makeCandidate(
+                champion, deathFrame, mutationWindow, protectedFrame,
+                (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
+            );
         }
         else {
             if (improved) {
@@ -819,9 +974,13 @@ class $modify(AIBotPauseLayer, PauseLayer) {
 
         // postUpdate stops while the level is paused. Rebuild retained overlays
         // when the pause menu opens so the cyan trail and current hitbox remain visible.
+        if (auto playLayer = PlayLayer::get()) {
+            BotState::s_practiceMode = playLayer->m_isPracticeMode;
+        }
         BotState::drawStoredTrajectory();
         if (auto playLayer = PlayLayer::get(); playLayer && playLayer->m_player1) {
             BotState::drawPlayerHitbox(playLayer->m_player1->getObjectRect());
+            BotState::drawHazardHitboxes();
             BotState::drawPredictedTrajectory();
         }
 
@@ -882,6 +1041,12 @@ $on_mod(Loaded) {
     });
     listenForSettingChanges<bool>("show-hitbox", [](bool visible) {
         if (BotState::s_hitboxNode) BotState::s_hitboxNode->setVisible(visible);
+    });
+    listenForSettingChanges<bool>("show-hazards", [](bool visible) {
+        if (BotState::s_hazardNode) {
+            BotState::s_hazardNode->setVisible(visible);
+            if (visible) BotState::drawHazardHitboxes();
+        }
     });
     listenForSettingChanges<bool>("show-trajectory", [](bool visible) {
         if (!BotState::s_trajectoryNode) return;

@@ -84,6 +84,12 @@
             "type": "bool",
             "default": false
         },
+        "show-hazards": {
+            "name": "Pokaz hitboxy przeszkod",
+            "description": "Pokazuje hitboxy kolizyjne kolcow, sawow i innych przeszkod sprawdzanych przez gre.",
+            "type": "bool",
+            "default": true
+        },
         "show-trajectory": {
             "name": "Pokaz trajektorie i kliki",
             "description": "Pokazuje aktualna i najlepsza trajektorie oraz miejsca klikniec.",
@@ -97,12 +103,12 @@
             "default": true
         },
         "prediction-steps": {
-            "name": "Ticki prognozy AI",
-            "description": "Liczba tickow do przodu rysowanych w przewidywanej trajektorii.",
+            "name": "Zasieg prognozy AI (ticki)",
+            "description": "Liczba tickow do przodu uwzglednianych w przewidywanej trajektorii.",
             "type": "int",
-            "default": 30,
+            "default": 1000,
             "min": 5,
-            "max": 50
+            "max": 2500
         },
         "remove-stuck-checkpoints": {
             "name": "Usuwaj zablokowany checkpoint",
@@ -140,4 +146,3 @@
         }
     }
 }
-
