@@ -520,10 +520,10 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             return;
         }
 
-        // Learning score is time based: every active AI tick earns 0.1 point.
+        // Learning score is time based: every active AI tick earns 0.05 point.
         auto& learningScore = this->m_isPracticeMode
             ? BotState::s_practiceScore : BotState::s_normalScore;
-        learningScore = std::clamp(learningScore + 0.1, -1000000.0, 1000000.0);
+        learningScore = std::clamp(learningScore + 0.05, -1000000.0, 1000000.0);
         BotState::updateScoreLabel();
 
         if (this->m_isPracticeMode &&
@@ -683,7 +683,7 @@ class $modify(AIBotPlayer, PlayerObject) {
         bool improved = currentPercent > previousBest;
         bool practiceMode = pl && pl->m_isPracticeMode;
         double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
-        score = std::clamp(score - 100.0, -1000000.0, 1000000.0);
+        score = std::clamp(score - 250.0, -1000000.0, 1000000.0);
         BotState::updateScoreLabel();
         int negativeScoreMutation = score < 0 ? std::min(120, (int)(-score / 2.0)) : 0;
         mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);
