@@ -38,8 +38,8 @@ namespace BotState {
     inline int s_attemptsCount = 0;
     inline float s_lastDeathPercent = -1000.0f;
     inline int s_sameSpotDeaths = 0;
-    inline int s_normalScore = 0;
-    inline int s_practiceScore = 0;
+    inline double s_normalScore = 0.0;
+    inline double s_practiceScore = 0.0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
     inline CCDrawNode* s_predictionNode = nullptr;
@@ -117,9 +117,16 @@ namespace BotState {
 
     void updateScoreLabel() {
         if (!s_scoreLabel) return;
-        auto text = "SCORE NORMAL x2: " + std::to_string(s_normalScore) +
-            " | PRACTICE: " + std::to_string(s_practiceScore) +
-            " | TOTAL: " + std::to_string(s_normalScore + s_practiceScore);
+        auto formatScore = [](double score) {
+            auto text = std::to_string(std::round(score * 10.0) / 10.0);
+            while (text.find('.') != std::string::npos && text.back() == '0') text.pop_back();
+            if (!text.empty() && text.back() == '.') text.pop_back();
+            return text;
+        };
+        auto total = s_normalScore * 2.0 + s_practiceScore;
+        auto text = "SCORE NORMAL x2: " + formatScore(s_normalScore) +
+            " | PRACTICE: " + formatScore(s_practiceScore) +
+            " | TOTAL: " + formatScore(total);
         s_scoreLabel->setString(text.c_str());
     }
 
@@ -481,6 +488,12 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             return;
         }
 
+        // Learning score is time based: every active AI tick earns 0.1 point.
+        auto& learningScore = this->m_isPracticeMode
+            ? BotState::s_practiceScore : BotState::s_normalScore;
+        learningScore = std::clamp(learningScore + 0.1, -1000000.0, 1000000.0);
+        BotState::updateScoreLabel();
+
         if (this->m_isPracticeMode &&
             Mod::get()->getSettingValue<bool>("exit-practice-at-percent")) {
             int exitPercent = (int)Mod::get()->getSettingValue<int64_t>("practice-exit-percent");
@@ -630,17 +643,10 @@ class $modify(AIBotPlayer, PlayerObject) {
             ? BotState::s_segment.bestPercent : BotState::s_bestDistanceX;
         bool improved = currentPercent > previousBest;
         bool practiceMode = pl && pl->m_isPracticeMode;
-        int scoreMultiplier = practiceMode ? 1 : 2;
-        int& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
-        if (improved) {
-            auto gain = currentPercent - previousBest;
-            auto points = std::max(1, (int)std::round(gain * 10.0f)) * scoreMultiplier;
-            score = std::min(1000000, score + points);
-        } else {
-            score = std::max(-1000000, score - scoreMultiplier);
-        }
+        double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
+        score = std::clamp(score - 100.0, -1000000.0, 1000000.0);
         BotState::updateScoreLabel();
-        int negativeScoreMutation = score < 0 ? std::min(120, -score / 2) : 0;
+        int negativeScoreMutation = score < 0 ? std::min(120, (int)(-score / 2.0)) : 0;
         mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);
 
         if (BotState::s_trainingSegment) {
