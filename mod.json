@@ -47,8 +47,8 @@
             "max": 1000000
         },
         "practice-death-input-delay-ms": {
-            "name": "Przerwa po smierci w Practice (ms)",
-            "description": "Czas bez klikania po respawnie Practice Mode, aby bot nie spamowal od razu po zgonie.",
+            "name": "Maks. losowa przerwa po smierci (ms)",
+            "description": "Po kazdym zgonie Practice bot losuje przerwe od 4 ms do tej wartosci, zeby nie spamowac klikniec.",
             "type": "int",
             "default": 500,
             "min": 4,

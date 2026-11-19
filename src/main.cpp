@@ -676,15 +676,14 @@ class $modify(AIBotPlayer, PlayerObject) {
         BotState::s_attemptsCount++;
         auto pl = PlayLayer::get();
         if (pl && pl->m_isPracticeMode) {
-            auto delayMs = (int)Mod::get()->getSettingValue<int64_t>("practice-death-input-delay-ms");
-            delayMs = std::clamp(delayMs, 4, 2000);
+            auto maxDelayMs = (int)Mod::get()->getSettingValue<int64_t>("practice-death-input-delay-ms");
+            maxDelayMs = std::clamp(maxDelayMs, 4, 2000);
+            auto delayMs = 4 + (int)(BotState::nextExploreRandom() % (uint32_t)(maxDelayMs - 3));
             BotState::s_postDeathCooldown = delayMs / 1000.0f;
-            if (delayMs > 0) {
-                pl->handleButton(false, 1, true);
-                if (pl->m_player2) pl->handleButton(false, 2, true);
-                BotState::s_lastHold = false;
-                BotState::s_cpsCooldown = 0.0f;
-            }
+            pl->handleButton(false, 1, true);
+            if (pl->m_player2) pl->handleButton(false, 2, true);
+            BotState::s_lastHold = false;
+            BotState::s_cpsCooldown = 0.0f;
         }
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
         int deathFrame = BotState::s_currentFrame;
