@@ -19,3 +19,5 @@ jobs:
         with:
           sdk: 'v5.11.2'
           target: 'Win64'
+
+          combine: true
