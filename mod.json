@@ -64,6 +64,14 @@
             "type": "bool",
             "default": true
         },
+        "prediction-steps": {
+            "name": "Ticki prognozy AI",
+            "description": "Liczba tickow do przodu rysowanych w przewidywanej trajektorii.",
+            "type": "int",
+            "default": 30,
+            "min": 5,
+            "max": 50
+        },
         "remove-stuck-checkpoints": {
             "name": "Usuwaj zablokowany checkpoint",
             "description": "Usuwa najnowszy checkpoint Practice Mode po ustawionej liczbie zgonow w prawie tym samym miejscu.",

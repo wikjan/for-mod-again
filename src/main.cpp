@@ -159,7 +159,8 @@ namespace BotState {
         auto p1 = s_currentTrajectory[count - 2].position;
         auto p2 = s_currentTrajectory[count - 1].position;
         constexpr float tickRate = 60.0f;
-        constexpr float horizon = 0.5f;
+        int predictionSteps = (int)Mod::get()->getSettingValue<int64_t>("prediction-steps");
+        predictionSteps = std::clamp(predictionSteps, 5, 50);
         auto velocity = ccp((p2.x - p1.x) * tickRate, (p2.y - p1.y) * tickRate);
         auto acceleration = ccp(
             (p2.x - 2.0f * p1.x + p0.x) * tickRate * tickRate,
@@ -176,8 +177,8 @@ namespace BotState {
 
         auto previous = p2;
         auto color = ccc4f(0.85f, 0.2f, 1.0f, 0.9f);
-        for (int step = 1; step <= 30; ++step) {
-            auto time = horizon * (float)step / 30.0f;
+        for (int step = 1; step <= predictionSteps; ++step) {
+            auto time = (float)step / tickRate;
             auto next = ccp(
                 p2.x + velocity.x * time + 0.5f * acceleration.x * time * time,
                 p2.y + velocity.y * time + 0.5f * acceleration.y * time * time
