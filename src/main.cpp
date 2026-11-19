@@ -178,11 +178,11 @@ class $modify(AIBotPauseLayer, PauseLayer) {
 };
 
 $on_mod(Loaded) {
-    Mod::get()->listenForSettingChanges("bot-enabled", [](bool val) {
+    listenForSettingChanges<bool>("bot-enabled", [](bool val) {
         BotState::s_enabled = val;
         BotState::refreshIndicator();
     });
-    Mod::get()->listenForSettingChanges("cheat-indicator", [](bool val) {
+    listenForSettingChanges<bool>("cheat-indicator", [](bool val) {
         BotState::refreshIndicator();
     });
 }
