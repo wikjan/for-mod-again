@@ -72,7 +72,15 @@ namespace BotState {
 
     int inputMemoryLimit() {
         int limit = (int)Mod::get()->getSettingValue<int64_t>("input-memory-ticks");
-        return std::clamp(limit, 30000, 250000);
+        limit = std::clamp(limit, 30000, 250000);
+        int budgetMb = (int)Mod::get()->getSettingValue<int64_t>("memory-budget-mb");
+        budgetMb = std::clamp(budgetMb, 1, 50);
+        // Reserve for the best/current/candidate input and trajectory vectors,
+        // including their temporary copies during a new best run.
+        constexpr size_t estimatedBytesPerTick =
+            8 * sizeof(FrameDecision) + 4 * sizeof(TrailPoint);
+        auto budgetTicks = ((size_t)budgetMb * 1024u * 1024u) / estimatedBytesPerTick;
+        return std::max(1, std::min(limit, (int)budgetTicks));
     }
 
     std::vector<FrameDecision> makeCandidate(
@@ -132,9 +140,8 @@ namespace BotState {
         drawPath(s_bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
         drawPath(s_segment.bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
         drawPath(s_currentTrajectory, ccc4f(0.15f, 0.8f, 1.0f, 0.8f), ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
-        auto rememberedCount = std::min(s_bestPath.size(), s_bestTrajectory.size());
-        if (rememberedCount > 0) {
-            s_trajectoryNode->drawDot(s_bestTrajectory[rememberedCount - 1].position, 6.0f,
+        if (!s_bestTrajectory.empty()) {
+            s_trajectoryNode->drawDot(s_bestTrajectory.back().position, 6.0f,
                                       ccc4f(1.0f, 1.0f, 1.0f, 1.0f));
         }
     }
@@ -183,6 +190,33 @@ namespace BotState {
 
         auto previous = p2;
         auto color = ccc4f(0.85f, 0.2f, 1.0f, 0.9f);
+
+        // When this level has a remembered route, use its future positions as
+        // the primary forecast. Align the stored path to the icon's current
+        // position so the overlay follows the live run rather than the old run.
+        auto const& memory = s_trainingSegment && !s_segment.bestTrajectory.empty()
+            ? s_segment.bestTrajectory : s_bestTrajectory;
+        if (!memory.empty()) {
+            auto currentPercent = s_currentTrajectory.back().percent;
+            auto it = std::lower_bound(memory.begin(), memory.end(), currentPercent,
+                [](TrailPoint const& point, float target) { return point.percent < target; });
+            if (it != memory.end()) {
+                auto memoryStart = it->position;
+                auto offset = ccp(p2.x - memoryStart.x, p2.y - memoryStart.y);
+                auto previousMemory = p2;
+                int drawn = 0;
+                for (++it; it != memory.end() && drawn < predictionSteps; ++it, ++drawn) {
+                    auto nextMemory = ccp(it->position.x + offset.x, it->position.y + offset.y);
+                    s_predictionNode->drawSegment(previousMemory, nextMemory, 2.0f, color);
+                    previousMemory = nextMemory;
+                }
+                if (drawn > 0) {
+                    s_predictionNode->drawDot(previousMemory, 3.5f, color);
+                    return;
+                }
+            }
+        }
+
         for (int step = 1; step <= predictionSteps; ++step) {
             auto time = (float)step / tickRate;
             auto next = ccp(
@@ -266,6 +300,14 @@ namespace BotState {
         }
         if (s_trajectoryNode && click) {
             s_trajectoryNode->drawDot(position, 4.0f, ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
+        }
+        auto maxSamples = (size_t)inputMemoryLimit();
+        if (s_currentTrajectory.size() >= maxSamples && maxSamples > 1) {
+            // Keep the newest live observations when the configured memory
+            // window fills; older current-run samples are the first to go.
+            auto discard = std::max<size_t>(1, maxSamples / 16);
+            s_currentTrajectory.erase(s_currentTrajectory.begin(),
+                s_currentTrajectory.begin() + std::min(discard, s_currentTrajectory.size()));
         }
         s_currentTrajectory.push_back({position, click, percent});
         s_lastTrajectoryPoint = position;
@@ -414,6 +456,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
                 ? BotState::s_bestPath : BotState::s_candidatePath;
         }
         this->handleButton(false, 1, true);
+        if (this->m_player2) this->handleButton(false, 2, true);
         BotState::beginTrajectoryAttempt();
     }
 
@@ -519,6 +562,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         if (click) BotState::s_cpsCooldown = 1.0f / cpsTarget;
         if (hold != BotState::s_lastHold) {
             this->handleButton(hold, 1, true);
+            if (this->m_player2) this->handleButton(hold, 2, true);
         }
         BotState::s_lastHold = hold;
 
