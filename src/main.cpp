@@ -7,6 +7,7 @@
 #include <vector>
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 
 using namespace geode::prelude;
 
@@ -138,6 +139,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
 
         BotState::s_enabled = Mod::get()->getSettingValue<bool>("bot-enabled");
         BotState::s_currentFrame = 0;
+        BotState::s_attemptsCount = 0;
         BotState::s_bestDistanceX = 0.0f;
         BotState::s_bestPath.clear();
         BotState::s_bestTrajectory.clear();
@@ -226,6 +228,9 @@ class $modify(AIBotPlayLayer, PlayLayer) {
 
     void postUpdate(float dt) {
         PlayLayer::postUpdate(dt);
+
+        // Keep the HUD in sync when the bot is toggled from the pause menu.
+        BotState::refreshIndicator();
 
         if (!BotState::s_enabled) return;
         if (!this->m_player1 || this->m_player1->m_isDead) return;
