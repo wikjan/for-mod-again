@@ -40,6 +40,7 @@ namespace BotState {
     inline int s_sameSpotDeaths = 0;
     inline double s_normalScore = 0.0;
     inline double s_practiceScore = 0.0;
+    inline constexpr double s_scoreLimit = 2147483647.0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
     inline CCDrawNode* s_predictionNode = nullptr;
@@ -118,7 +119,7 @@ namespace BotState {
     void updateScoreLabel() {
         if (!s_scoreLabel) return;
         auto formatScore = [](double score) {
-            auto text = std::to_string(std::round(score * 10.0) / 10.0);
+            auto text = std::to_string(std::round(score * 100.0) / 100.0);
             while (text.find('.') != std::string::npos && text.back() == '0') text.pop_back();
             if (!text.empty() && text.back() == '.') text.pop_back();
             return text;
@@ -523,7 +524,10 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // Learning score is time based: every active AI tick earns 0.05 point.
         auto& learningScore = this->m_isPracticeMode
             ? BotState::s_practiceScore : BotState::s_normalScore;
-        learningScore = std::clamp(learningScore + 0.05, -1000000.0, 1000000.0);
+        auto tickRewardHundredths = (int)Mod::get()->getSettingValue<int64_t>("learning-tick-reward-hundredths");
+        tickRewardHundredths = std::clamp(tickRewardHundredths, 0, 100);
+        learningScore = std::clamp(learningScore + tickRewardHundredths / 100.0,
+                                   -BotState::s_scoreLimit, BotState::s_scoreLimit);
         BotState::updateScoreLabel();
 
         if (this->m_isPracticeMode &&
@@ -683,7 +687,9 @@ class $modify(AIBotPlayer, PlayerObject) {
         bool improved = currentPercent > previousBest;
         bool practiceMode = pl && pl->m_isPracticeMode;
         double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
-        score = std::clamp(score - 150.0, -1000000.0, 1000000.0);
+        auto deathPenalty = (int)Mod::get()->getSettingValue<int64_t>("learning-death-penalty");
+        deathPenalty = std::clamp(deathPenalty, 0, 1000000);
+        score = std::clamp(score - deathPenalty, -BotState::s_scoreLimit, BotState::s_scoreLimit);
         BotState::updateScoreLabel();
         int negativeScoreMutation = score < 0 ? std::min(120, (int)(-score / 2.0)) : 0;
         mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);

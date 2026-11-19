@@ -30,6 +30,22 @@
             "min": 5,
             "max": 120
         },
+        "learning-tick-reward-hundredths": {
+            "name": "Punkty za tick (setne czesci)",
+            "description": "Nagroda za aktywny tick AI. Wartosc 5 oznacza +0.05 punktu za tick.",
+            "type": "int",
+            "default": 5,
+            "min": 0,
+            "max": 100
+        },
+        "learning-death-penalty": {
+            "name": "Kara punktowa za smierc",
+            "description": "Liczba punktow odejmowana od wyniku odpowiedniego trybu po kazdej smierci.",
+            "type": "int",
+            "default": 150,
+            "min": 0,
+            "max": 1000000
+        },
         "input-memory-ticks": {
             "name": "Maksymalna pamiec wejsc (ticki)",
             "description": "Maksymalna liczba tickow decyzji wejscia przechowywanych dla zapamietanego click patternu.",
