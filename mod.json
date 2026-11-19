@@ -1,40 +1,61 @@
 {
-  "geode": "5.11.2",
-  "gd": {
-    "win": "*"
-  },
-  "version": "v1.0.0",
-  "id": "wiktor.ai_learning_bot",
-  "name": "AI Learning Bot & Cheat Indicator",
-  "developer": "Wiktor",
-  "description": "Autonomiczny bot uczący się na własnych błędach w GD 2.2 z dynamicznym Cheat Indicatore(m (czerwony/zielony) oraz menu w pauzie i ustawieniach.",
-  "dependencies": {},
-  "settings": {
-    "bot-enabled": {
-      "name": "Bot aktywny",
-      "description": "Włącza algorytm uczenia i sterowania graczem.",
-      "type": "bool",
-      "default": false
+    "geode": "v5.11.2",
+    "gd": {
+        "win": "*"
     },
-    "cheat-indicator": {
-      "name": "Cheat Indicator na ekranie",
-      "description": "Pokazuje diodowy wskaźnik stanu bota (Czerwony = Cheat ON, Zielony = Legit OFF).",
-      "type": "bool",
-      "default": true
-    },
-    "learning-rate": {
-      "name": "Zakres mutacji (klatki)",
-      "description": "Liczba klatek przed śmiercią gracza, w których bot dokonuje mutacji swoich decyzji.",
-      "type": "int",
-      "default": 18,
-      "min": 5,
-      "max": 60
-    },
-    "auto-reset": {
-      "name": "Szybki restart po śmierci",
-      "description": "Błyskawiczny respawn po zderzeniu z przeszkodą dla przyspieszenia uczenia.",
-      "type": "bool",
-      "default": true
+    "version": "v1.0.0",
+    "id": "wiktor.ai_learning_bot",
+    "name": "AI Learning Bot & Cheat Indicator",
+    "developer": "Wiktor",
+    "description": "Autonomiczny bot uczacy sie na wlasnych bledach w GD 2.2 z dynamicznym Cheat Indicatorem (czerwony/zielony) oraz menu w pauzie i ustawieniach.",
+    "dependencies": {},
+    "settings": {
+        "bot-enabled": {
+            "name": "Bot aktywny",
+            "description": "Wlacza algorytm uczenia i sterowania graczem.",
+            "type": "bool",
+            "default": false
+        },
+        "cheat-indicator": {
+            "name": "Cheat Indicator na ekranie",
+            "description": "Pokazuje diodowy wskaznik stanu bota (Czerwony = Cheat ON, Zielony = Legit OFF).",
+            "type": "bool",
+            "default": true
+        },
+        "learning-rate": {
+            "name": "Zakres mutacji (klatki)",
+            "description": "Liczba klatek przed smiercia gracza, w ktorych bot dokonuje mutacji swoich decyzji.",
+            "type": "int",
+            "default": 18,
+            "min": 5,
+            "max": 120
+        },
+        "cps-limit": {
+            "name": "Limit CPS",
+            "description": "Maksymalna liczba nowych klikniec na sekunde; przytrzymanie skoku nie zuzywa kolejnych klikniec.",
+            "type": "int",
+            "default": 12,
+            "min": 1,
+            "max": 120
+        },
+        "show-hitbox": {
+            "name": "Pokaz hitbox gracza",
+            "description": "Pokazuje prostokat kolizji gracza podczas gry.",
+            "type": "bool",
+            "default": false
+        },
+        "show-trajectory": {
+            "name": "Pokaz trajektorie i kliki",
+            "description": "Pokazuje aktualna i najlepsza trajektorie oraz miejsca klikniec.",
+            "type": "bool",
+            "default": true
+        },
+        "auto-reset": {
+            "name": "Szybki restart po smierci",
+            "description": "Blyskawiczny respawn po zderzeniu z przeszkoda dla przyspieszenia uczenia.",
+            "type": "bool",
+            "default": true
+        }
     }
-  }
 }
+
