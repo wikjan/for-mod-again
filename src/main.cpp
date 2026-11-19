@@ -96,7 +96,7 @@ namespace BotState {
             uint32_t value = ((seed >> ((seed >> 28) + 4)) ^ seed) * 277803737u;
             return (value >> 22) ^ value;
         };
-        int flips = 1 + (int)(nextRandom() % (uint32_t)std::min(4, span));
+        int flips = 1 + (int)(nextRandom() % (uint32_t)std::min(2, span));
         std::vector<bool> changed((size_t)span, false);
         for (int i = 0; i < flips; ++i) {
             int offset = (int)(nextRandom() % (uint32_t)span);
@@ -110,7 +110,8 @@ namespace BotState {
     void updateScoreLabel() {
         if (!s_scoreLabel) return;
         auto text = "SCORE NORMAL x2: " + std::to_string(s_normalScore) +
-            " | PRACTICE: " + std::to_string(s_practiceScore);
+            " | PRACTICE: " + std::to_string(s_practiceScore) +
+            " | TOTAL: " + std::to_string(s_normalScore + s_practiceScore);
         s_scoreLabel->setString(text.c_str());
     }
 
@@ -131,6 +132,11 @@ namespace BotState {
         drawPath(s_bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
         drawPath(s_segment.bestTrajectory, ccc4f(1.0f, 0.72f, 0.12f, 0.85f), ccc4f(1.0f, 0.92f, 0.25f, 1.0f));
         drawPath(s_currentTrajectory, ccc4f(0.15f, 0.8f, 1.0f, 0.8f), ccc4f(1.0f, 0.25f, 0.25f, 1.0f));
+        auto rememberedCount = std::min(s_bestPath.size(), s_bestTrajectory.size());
+        if (rememberedCount > 0) {
+            s_trajectoryNode->drawDot(s_bestTrajectory[rememberedCount - 1].position, 6.0f,
+                                      ccc4f(1.0f, 1.0f, 1.0f, 1.0f));
+        }
     }
 
     void drawPlayerHitbox(CCRect const& playerRect) {
@@ -186,6 +192,7 @@ namespace BotState {
             s_predictionNode->drawSegment(previous, next, 2.0f, color);
             previous = next;
         }
+        s_predictionNode->drawDot(previous, 3.5f, color);
     }
 
     uint32_t nextExploreRandom() {
@@ -341,7 +348,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         hudNode->addChild(label);
         BotState::s_indicatorLabel = label;
 
-        auto legend = CCLabelBMFont::create("TRAIL: red=click  gold=best  cyan=current", "chatFont.fnt");
+        auto legend = CCLabelBMFont::create("TRAIL: red=click gold=best white=memory-end cyan=current purple=prediction", "chatFont.fnt");
         legend->setScale(0.34f);
         legend->setAnchorPoint(ccp(0.0f, 0.5f));
         legend->setPosition(ccp(12.0f, -15.0f));
