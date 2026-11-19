@@ -686,10 +686,17 @@ class $modify(AIBotPlayer, PlayerObject) {
         BotState::s_attemptsCount++;
         auto pl = PlayLayer::get();
         if (pl && pl->m_isPracticeMode) {
-            auto maxDelayMs = (int)Mod::get()->getSettingValue<int64_t>("practice-death-input-delay-ms");
-            maxDelayMs = std::clamp(maxDelayMs, 4, 2000);
-            auto delayMs = 4 + (int)(BotState::nextExploreRandom() % (uint32_t)(maxDelayMs - 3));
-            BotState::s_postDeathCooldown = delayMs / 1000.0f;
+            // Skip the delay on some deaths so Practice learning can continue
+            // immediately; otherwise use the configured random delay range.
+            bool skipDelay = BotState::nextExploreRandom() % 100u < 20u;
+            if (skipDelay) {
+                BotState::s_postDeathCooldown = 0.0f;
+            } else {
+                auto maxDelayMs = (int)Mod::get()->getSettingValue<int64_t>("practice-death-input-delay-ms");
+                maxDelayMs = std::clamp(maxDelayMs, 4, 2000);
+                auto delayMs = 4 + (int)(BotState::nextExploreRandom() % (uint32_t)(maxDelayMs - 3));
+                BotState::s_postDeathCooldown = delayMs / 1000.0f;
+            }
             pl->handleButton(false, 1, true);
             if (pl->m_player2) pl->handleButton(false, 2, true);
             BotState::s_lastHold = false;
