@@ -14,8 +14,8 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - uses: geode-sdk/build-geode-mod@main
+      - name: Build Mod
+        uses: geode-sdk/build-geode-mod@main
         with:
-          bindings: 'geode-sdk/bindings'
-          bindings-ref: 'main'
-          combine: true
+          sdk: 'v5.11.2'
+          target: 'Win64'
