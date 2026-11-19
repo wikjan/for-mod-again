@@ -276,6 +276,35 @@ namespace BotState {
         return (size_t)std::distance(s_bestTrajectory.begin(), it);
     }
 
+    bool guessFromSimilarMemory(
+        CCPoint position,
+        std::vector<FrameDecision> const& inputs,
+        std::vector<TrailPoint> const& trajectory,
+        bool& guessedHold
+    ) {
+        auto count = std::min(inputs.size(), trajectory.size());
+        if (count < 2) return false;
+
+        float closestDistanceSquared = 96.0f * 96.0f;
+        size_t closest = count;
+        for (size_t i = 0; i < count; ++i) {
+            auto dx = trajectory[i].position.x - position.x;
+            auto dy = trajectory[i].position.y - position.y;
+            auto distanceSquared = dx * dx + dy * dy;
+            if (distanceSquared < closestDistanceSquared) {
+                closestDistanceSquared = distanceSquared;
+                closest = i;
+            }
+        }
+        if (closest == count || closest + 1 >= count) return false;
+
+        // Reuse the next action from a remembered point in a similar place.
+        // This gives exploration a data-based guess before it falls back to
+        // random holds and releases.
+        guessedHold = inputs[closest + 1].hold;
+        return true;
+    }
+
     void seedSegmentFromBest(float startPercent) {
         if (!s_segment.bestInputs.empty() || s_bestPath.empty()) return;
 
@@ -476,6 +505,9 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         if (!this->m_player1 || this->m_player1->m_isDead) return;
 
         float progress = this->getCurrentPercent();
+        auto playerRect = this->m_player1->getObjectRect();
+        auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
+                            playerRect.origin.y + playerRect.size.height * 0.5f);
         if (!BotState::s_enabled) {
             // Visual tracking must continue when the AI is turned off from
             // the pause menu; only input control is disabled in this state.
@@ -541,9 +573,19 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             hold = inputPath[frame].hold;
         } else {
             // The old path ends at the best run's frontier. Explore beyond it
-            // with a varied, sparse tap pattern, storing decisions only up to
-            // the configurable input-tick limit.
+            // by first looking for a similar remembered position and reusing
+            // its next click decision. Use a varied pattern when memory has no
+            // nearby match. Decisions are retained up to the tick limit.
             hold = BotState::nextExploreHold(dt);
+            auto const& guessInputs = BotState::s_trainingSegment && !BotState::s_segment.bestInputs.empty()
+                ? BotState::s_segment.bestInputs : BotState::s_bestPath;
+            auto const& guessTrajectory = BotState::s_trainingSegment && !BotState::s_segment.bestTrajectory.empty()
+                ? BotState::s_segment.bestTrajectory : BotState::s_bestTrajectory;
+            bool rememberedGuess = false;
+            if (!BotState::guessFromSimilarMemory(position, guessInputs, guessTrajectory, rememberedGuess)) {
+                rememberedGuess = hold;
+            }
+            hold = rememberedGuess;
             if (canStoreInput && frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         }
 
@@ -579,9 +621,6 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         }
         BotState::s_lastHold = hold;
 
-        auto playerRect = m_player1->getObjectRect();
-        auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
-                            playerRect.origin.y + playerRect.size.height * 0.5f);
         BotState::recordTrajectoryPoint(position, click, progress);
 
         BotState::drawPlayerHitbox(playerRect);
