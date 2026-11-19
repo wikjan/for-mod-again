@@ -1,5 +1,8 @@
 {
     "geode": "5.11.2",
+    "gd": {
+        "win": "*"
+    },
     "version": "v1.0.0",
     "id": "wiktor.ai_learning_bot",
     "name": "AI Learning Bot & Cheat Indicator",
