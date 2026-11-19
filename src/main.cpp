@@ -49,6 +49,7 @@ namespace BotState {
     inline bool s_hasLastTrajectoryPoint = false;
     inline bool s_lastHold = false;
     inline float s_cpsCooldown = 0.0f;
+    inline float s_postDeathCooldown = 0.0f;
     inline CCPoint s_lastTrajectoryPoint = CCPointZero;
     inline uint32_t s_exploreRandomSeed = 1;
     inline int s_explorationRunCount = 0;
@@ -395,6 +396,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_enabled = Mod::get()->getSettingValue<bool>("bot-enabled");
         BotState::s_currentFrame = 0;
         BotState::s_attemptsCount = 0;
+        BotState::s_postDeathCooldown = 0.0f;
         BotState::s_lastDeathPercent = -1000.0f;
         BotState::s_sameSpotDeaths = 0;
         BotState::s_normalScore = 0;
@@ -524,6 +526,13 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             BotState::recordTrajectoryPoint(position, false, progress);
             BotState::drawPlayerHitbox(playerRect);
             BotState::drawPredictedTrajectory();
+            return;
+        }
+
+        if (BotState::s_postDeathCooldown > 0.0f) {
+            BotState::s_postDeathCooldown = std::max(0.0f, BotState::s_postDeathCooldown - dt);
+            BotState::s_lastHold = false;
+            BotState::drawPlayerHitbox(playerRect);
             return;
         }
 
@@ -666,6 +675,17 @@ class $modify(AIBotPlayer, PlayerObject) {
 
         BotState::s_attemptsCount++;
         auto pl = PlayLayer::get();
+        if (pl && pl->m_isPracticeMode) {
+            auto delayMs = (int)Mod::get()->getSettingValue<int64_t>("practice-death-input-delay-ms");
+            delayMs = std::clamp(delayMs, 4, 2000);
+            BotState::s_postDeathCooldown = delayMs / 1000.0f;
+            if (delayMs > 0) {
+                pl->handleButton(false, 1, true);
+                if (pl->m_player2) pl->handleButton(false, 2, true);
+                BotState::s_lastHold = false;
+                BotState::s_cpsCooldown = 0.0f;
+            }
+        }
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
         int deathFrame = BotState::s_currentFrame;
         int mutationWindow = (int)Mod::get()->getSettingValue<int64_t>("learning-rate");

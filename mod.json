@@ -46,6 +46,14 @@
             "min": 0,
             "max": 1000000
         },
+        "practice-death-input-delay-ms": {
+            "name": "Przerwa po smierci w Practice (ms)",
+            "description": "Czas bez klikania po respawnie Practice Mode, aby bot nie spamowal od razu po zgonie.",
+            "type": "int",
+            "default": 500,
+            "min": 4,
+            "max": 2000
+        },
         "input-memory-ticks": {
             "name": "Maksymalna pamiec wejsc (ticki)",
             "description": "Maksymalna liczba tickow decyzji wejscia przechowywanych dla zapamietanego click patternu.",
