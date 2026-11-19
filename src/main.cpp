@@ -164,9 +164,14 @@ namespace BotState {
     bool nextExploreHold(float dt) {
         s_exploreRemainingSeconds -= std::max(0.0f, dt);
         if (s_exploreRemainingSeconds <= 0.0f) {
-            s_exploreHold = (nextExploreRandom() % 100u) < 70u;
+            auto choice = nextExploreRandom() % 100u;
+            s_exploreHold = choice < 70u;
             if (s_exploreHold) {
                 s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 1901u) / 1000.0f;
+            } else if (choice < 90u) {
+                // Sometimes leave the input released long enough to observe
+                // whether gravity and momentum carry the player forward.
+                s_exploreRemainingSeconds = 0.5f + (float)(nextExploreRandom() % 1501u) / 1000.0f;
             } else {
                 s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 401u) / 1000.0f;
             }
