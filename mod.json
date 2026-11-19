@@ -1,0 +1,37 @@
+{
+    "geode": "5.11.2",
+    "version": "v1.0.0",
+    "id": "wiktor.ai_learning_bot",
+    "name": "AI Learning Bot & Cheat Indicator",
+    "developer": "Wiktor",
+    "description": "Autonomiczny bot uczacy sie na wlasnych bledach w GD 2.2 z dynamicznym Cheat Indicatorem (czerwony/zielony) oraz menu w pauzie i ustawieniach.",
+    "dependencies": [],
+    "settings": {
+        "bot-enabled": {
+            "name": "Bot aktywny",
+            "description": "Wlacza algorytm uczenia i sterowania graczem.",
+            "type": "bool",
+            "default": false
+        },
+        "cheat-indicator": {
+            "name": "Cheat Indicator na ekranie",
+            "description": "Pokazuje diodowy wskaznik stanu bota (Czerwony = Cheat ON, Zielony = Legit OFF).",
+            "type": "bool",
+            "default": true
+        },
+        "learning-rate": {
+            "name": "Zakres mutacji (klatki)",
+            "description": "Liczba klatek przed smiercia gracza, w ktorych bot dokonuje mutacji swoich decyzji.",
+            "type": "int",
+            "default": 18,
+            "min": 5,
+            "max": 60
+        },
+        "auto-reset": {
+            "name": "Szybki restart po smierci",
+            "description": "Blyskawiczny respawn po zderzeniu z przeszkoda dla przyspieszenia uczenia.",
+            "type": "bool",
+            "default": true
+        }
+    }
+}
