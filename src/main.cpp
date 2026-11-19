@@ -683,7 +683,7 @@ class $modify(AIBotPlayer, PlayerObject) {
         bool improved = currentPercent > previousBest;
         bool practiceMode = pl && pl->m_isPracticeMode;
         double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
-        score = std::clamp(score - 250.0, -1000000.0, 1000000.0);
+        score = std::clamp(score - 150.0, -1000000.0, 1000000.0);
         BotState::updateScoreLabel();
         int negativeScoreMutation = score < 0 ? std::min(120, (int)(-score / 2.0)) : 0;
         mutationWindow = std::min(120, mutationWindow + negativeScoreMutation);
