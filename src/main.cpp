@@ -88,6 +88,7 @@ namespace BotState {
         std::vector<FrameDecision> const& champion,
         int deathFrame,
         int mutationWindow,
+        int protectedFrame,
         uint32_t seed
     ) {
         auto candidate = champion;
@@ -95,7 +96,8 @@ namespace BotState {
         if ((int)candidate.size() > memoryLimit) candidate.resize(memoryLimit);
         deathFrame = std::clamp(deathFrame, 0, memoryLimit);
         if ((int)candidate.size() < deathFrame) candidate.resize(deathFrame, {false});
-        int first = std::max(0, deathFrame - mutationWindow);
+        protectedFrame = std::clamp(protectedFrame, 0, memoryLimit);
+        int first = std::max(protectedFrame, deathFrame - mutationWindow);
         int last = std::min(deathFrame - 1, (int)candidate.size() - 1);
         int span = last - first + 1;
         if (span <= 0) return candidate;
@@ -268,13 +270,17 @@ namespace BotState {
         return s_exploreHold;
     }
 
-    size_t bestFrameAtPercent(float percent) {
-        if (s_bestTrajectory.empty()) return 0;
+    size_t frameAtPercent(std::vector<TrailPoint> const& trajectory, float percent) {
+        if (trajectory.empty()) return 0;
         auto it = std::lower_bound(
-            s_bestTrajectory.begin(), s_bestTrajectory.end(), percent,
+            trajectory.begin(), trajectory.end(), percent,
             [](TrailPoint const& point, float target) { return point.percent < target; }
         );
-        return (size_t)std::distance(s_bestTrajectory.begin(), it);
+        return (size_t)std::distance(trajectory.begin(), it);
+    }
+
+    size_t bestFrameAtPercent(float percent) {
+        return frameAtPercent(s_bestTrajectory, percent);
     }
 
     bool guessFromSimilarMemory(
@@ -703,8 +709,10 @@ class $modify(AIBotPlayer, PlayerObject) {
             }
             auto const& champion = BotState::s_segment.bestInputs.empty()
                 ? BotState::s_segmentAttempt : BotState::s_segment.bestInputs;
+            auto protectedFrame = (int)BotState::frameAtPercent(
+                BotState::s_segment.bestTrajectory, BotState::s_segment.bestPercent);
             BotState::s_segmentCandidate = BotState::makeCandidate(
-                champion, deathFrame, mutationWindow,
+                champion, deathFrame, mutationWindow, protectedFrame,
                 (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
             );
 
@@ -721,8 +729,9 @@ class $modify(AIBotPlayer, PlayerObject) {
             }
             auto const& champion = BotState::s_bestPath.empty()
                 ? BotState::s_currentAttempt : BotState::s_bestPath;
+            auto protectedFrame = (int)BotState::bestFrameAtPercent(BotState::s_bestDistanceX);
             BotState::s_candidatePath = BotState::makeCandidate(
-                champion, deathFrame, mutationWindow,
+                champion, deathFrame, mutationWindow, protectedFrame,
                 (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
             );
 
