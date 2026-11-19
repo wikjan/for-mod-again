@@ -50,7 +50,7 @@
             "name": "Maks. losowa przerwa po smierci (ms)",
             "description": "Po kazdym zgonie Practice bot losuje przerwe od 4 ms do tej wartosci, zeby nie spamowac klikniec.",
             "type": "int",
-            "default": 500,
+            "default": 2000,
             "min": 4,
             "max": 2000
         },
