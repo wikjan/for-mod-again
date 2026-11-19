@@ -109,10 +109,19 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // Zastosowanie zaplanowanego wejscia
         bool hold = BotState::s_currentAttempt[BotState::s_currentFrame].hold;
         if (hold) {
-            this->pushButton(0, true);
+            this->handleButton(true, 1, true);
         } else {
-            this->releaseButton(0, true);
+            this->handleButton(false, 1, true);
         }
+    }
+
+    void onExit() {
+        // These nodes belong to this PlayLayer. Clear the cached pointers
+        // before the layer releases its children so setting listeners cannot
+        // touch freed UI objects after leaving a level.
+        BotState::s_indicatorDot = nullptr;
+        BotState::s_indicatorLabel = nullptr;
+        PlayLayer::onExit();
     }
 };
 
@@ -210,11 +219,11 @@ class $modify(AIBotPauseLayer, PauseLayer) {
 // 4. Rejestracja nasluchiwania zmian w menu modow Geode
 // -------------------------------------------------------------
 $on_mod(Loaded) {
-    Mod::get()->listenForSettingChanges("bot-enabled", [](bool val) {
+    listenForSettingChanges<bool>("bot-enabled", [](bool val) {
         BotState::s_enabled = val;
         BotState::refreshIndicator();
     });
-    Mod::get()->listenForSettingChanges("cheat-indicator", [](bool val) {
+    listenForSettingChanges<bool>("cheat-indicator", [](bool val) {
         BotState::refreshIndicator();
     });
 }
