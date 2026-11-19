@@ -62,6 +62,14 @@
             "min": 30000,
             "max": 250000
         },
+        "neural-neurons": {
+            "name": "Liczba neuronow sieci AI",
+            "description": "Liczba neuronow warstwy ukrytej. Domyslnie 500; wartosci powyzej 5000 nie sa zalecane, bo zwiekszaja obciazenie CPU.",
+            "type": "int",
+            "default": 500,
+            "min": 64,
+            "max": 10000
+        },
         "memory-budget-mb": {
             "name": "Budzet pamieci AI (MB)",
             "description": "Przyblizony limit danych tras AI. Biezaca trajektoria usuwa najstarsze probki po osiagnieciu limitu, aby zapisywac nowe.",
@@ -146,3 +154,4 @@
         }
     }
 }
+

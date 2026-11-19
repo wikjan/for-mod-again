@@ -9,6 +9,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
+#include <array>
 
 using namespace geode::prelude;
 
@@ -27,6 +28,13 @@ struct LearnedSegment {
     float bestPercent = 0.0f;
     std::vector<FrameDecision> bestInputs;
     std::vector<TrailPoint> bestTrajectory;
+};
+
+constexpr size_t NEURAL_INPUTS = 7;
+struct NeuralSample {
+    std::array<float, NEURAL_INPUTS> features{};
+    bool hold = false;
+    bool exploratory = false;
 };
 
 namespace BotState {
@@ -83,6 +91,12 @@ namespace BotState {
     inline CCLabelBMFont* s_trajectoryLegend = nullptr;
     inline CCLabelBMFont* s_scoreLabel = nullptr;
     inline CCLabelBMFont* s_deathAnalysisLabel = nullptr;
+    inline std::vector<std::array<float, NEURAL_INPUTS>> s_neuralWeights;
+    inline std::vector<float> s_neuralBiases;
+    inline std::vector<float> s_neuralOutputWeights;
+    inline std::vector<float> s_neuralActivationsScratch;
+    inline std::vector<NeuralSample> s_neuralSamples;
+    inline float s_neuralOutputBias = 0.0f;
 
     int inputMemoryLimit() {
         int limit = (int)Mod::get()->getSettingValue<int64_t>("input-memory-ticks");
@@ -92,9 +106,119 @@ namespace BotState {
         // Reserve for the best/current/candidate input and trajectory vectors,
         // including their temporary copies during a new best run.
         constexpr size_t estimatedBytesPerTick =
-            10 * sizeof(FrameDecision) + 5 * sizeof(TrailPoint);
+            10 * sizeof(FrameDecision) + 5 * sizeof(TrailPoint) + sizeof(NeuralSample);
         auto budgetTicks = ((size_t)budgetMb * 1024u * 1024u) / estimatedBytesPerTick;
         return std::max(1, std::min(limit, (int)budgetTicks));
+    }
+
+    float sigmoid(float value) {
+        value = std::clamp(value, -16.0f, 16.0f);
+        return 1.0f / (1.0f + std::exp(-value));
+    }
+
+    uint32_t nextExploreRandom();
+
+    void ensureNeuralNetwork() {
+        int count = (int)Mod::get()->getSettingValue<int64_t>("neural-neurons");
+        count = std::clamp(count, 64, 10000);
+        if ((int)s_neuralWeights.size() == count) return;
+        s_neuralWeights.assign(count, {});
+        s_neuralBiases.assign(count, 0.0f);
+        s_neuralOutputWeights.assign(count, 0.0f);
+        s_neuralActivationsScratch.resize(count);
+        for (int neuron = 0; neuron < count; ++neuron) {
+            for (auto& weight : s_neuralWeights[(size_t)neuron]) {
+                weight = ((float)(nextExploreRandom() % 2001u) / 1000.0f - 1.0f) * 0.08f;
+            }
+            s_neuralBiases[(size_t)neuron] = ((float)(nextExploreRandom() % 2001u) / 1000.0f - 1.0f) * 0.02f;
+            s_neuralOutputWeights[(size_t)neuron] = ((float)(nextExploreRandom() % 2001u) / 1000.0f - 1.0f) * 0.02f;
+        }
+        s_neuralOutputBias = 0.0f;
+    }
+
+    std::array<float, NEURAL_INPUTS> neuralFeatures(CCPoint position, float percent) {
+        std::array<float, NEURAL_INPUTS> features{};
+        features[0] = std::clamp(percent / 100.0f, 0.0f, 1.0f);
+        features[1] = std::clamp(position.y / 600.0f, -1.0f, 1.0f);
+        if (!s_currentTrajectory.empty()) {
+            auto dy = position.y - s_currentTrajectory.back().position.y;
+            features[2] = std::clamp(dy / 20.0f, -1.0f, 1.0f);
+        }
+        float nearestDistance = 10000.0f;
+        float nearestDx = 1.0f;
+        float nearestDy = 0.0f;
+        bool foundHazard = false;
+        for (auto const& rect : s_hazardRects) {
+            auto dx = rect.origin.x - position.x;
+            if (dx < -30.0f || dx > 300.0f) continue;
+            if (dx < nearestDistance) {
+                nearestDistance = dx;
+                nearestDx = std::clamp(dx / 300.0f, -0.1f, 1.0f);
+                nearestDy = std::clamp((rect.origin.y + rect.size.height * 0.5f - position.y) / 200.0f, -1.0f, 1.0f);
+                foundHazard = true;
+            }
+        }
+        features[3] = foundHazard ? nearestDx : 1.0f;
+        features[4] = foundHazard ? nearestDy : 0.0f;
+        features[5] = foundHazard ? 1.0f : 0.0f;
+        features[6] = s_practiceMode ? 1.0f : 0.0f;
+        return features;
+    }
+
+    float neuralPrediction(std::array<float, NEURAL_INPUTS> const& features,
+                           std::vector<float>* activations = nullptr) {
+        ensureNeuralNetwork();
+        float output = s_neuralOutputBias;
+        if (activations) activations->clear();
+        for (size_t i = 0; i < s_neuralWeights.size(); ++i) {
+            float sum = s_neuralBiases[i];
+            for (size_t j = 0; j < NEURAL_INPUTS; ++j) sum += s_neuralWeights[i][j] * features[j];
+            // Clipped linear activation is much cheaper than tanh and bounded
+            // activations keep the output layer numerically stable.
+            auto activation = std::clamp(sum, -1.0f, 1.0f);
+            if (activations) activations->push_back(activation);
+            output += s_neuralOutputWeights[i] * activation;
+        }
+        return sigmoid(output);
+    }
+
+    void trainNeuralSample(NeuralSample const& sample, float learningRate) {
+        auto prediction = neuralPrediction(sample.features, &s_neuralActivationsScratch);
+        float target = sample.hold ? 1.0f : 0.0f;
+        float outputDelta = target - prediction;
+        s_neuralOutputBias += learningRate * outputDelta;
+        for (size_t i = 0; i < s_neuralActivationsScratch.size(); ++i) {
+            auto activation = s_neuralActivationsScratch[i];
+            auto derivative = std::abs(activation) < 1.0f ? 1.0f : 0.0f;
+            auto hiddenDelta = outputDelta * s_neuralOutputWeights[i] * derivative;
+            s_neuralOutputWeights[i] += learningRate * outputDelta * activation;
+            for (size_t j = 0; j < NEURAL_INPUTS; ++j) {
+                s_neuralWeights[i][j] += learningRate * hiddenDelta * sample.features[j];
+            }
+            s_neuralBiases[i] += learningRate * hiddenDelta;
+        }
+    }
+
+    void trainNeuralOnOutcome(bool improved) {
+        if (s_neuralSamples.empty()) return;
+        ensureNeuralNetwork();
+        if (improved) {
+            // Learn from at most 256 evenly spaced decisions in a record run.
+            auto stride = std::max<size_t>(1, s_neuralSamples.size() / 256);
+            for (size_t i = 0; i < s_neuralSamples.size(); i += stride) {
+                trainNeuralSample(s_neuralSamples[i], 0.003f);
+            }
+        } else {
+            // Death is a negative outcome for the final local pattern; try the
+            // opposite decisions nearby while the mutation search tests them.
+            auto start = s_neuralSamples.size() > 12 ? s_neuralSamples.size() - 12 : 0;
+            for (size_t i = start; i < s_neuralSamples.size(); ++i) {
+                if (!s_neuralSamples[i].exploratory) continue;
+                auto alternative = s_neuralSamples[i];
+                alternative.hold = !alternative.hold;
+                trainNeuralSample(alternative, 0.001f);
+            }
+        }
     }
 
     std::vector<FrameDecision> makeCandidate(
@@ -309,20 +433,15 @@ namespace BotState {
             !s_bestPracticePath.empty() && nextExploreRandom() % 100u < 70u;
     }
 
-    bool nextExploreHold(float dt) {
+    bool nextNeuralHold(float dt, std::array<float, NEURAL_INPUTS> const& features) {
         s_exploreRemainingSeconds -= std::max(0.0f, dt);
         if (s_exploreRemainingSeconds <= 0.0f) {
-            auto choice = nextExploreRandom() % 100u;
-            s_exploreHold = choice < 70u;
-            if (s_exploreHold) {
-                s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 1901u) / 1000.0f;
-            } else if (choice < 90u) {
-                // Sometimes leave the input released long enough to observe
-                // whether gravity and momentum carry the player forward.
-                s_exploreRemainingSeconds = 0.5f + (float)(nextExploreRandom() % 1501u) / 1000.0f;
-            } else {
-                s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 401u) / 1000.0f;
-            }
+            auto probability = neuralPrediction(features);
+            auto draw = (float)(nextExploreRandom() % 10000u) / 10000.0f;
+            s_exploreHold = draw < probability;
+            // Keep decisions stable for natural 0.1â€“2.0 second intervals;
+            // the network chooses the action, while this clock avoids jitter.
+            s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 1901u) / 1000.0f;
         }
         return s_exploreHold;
     }
@@ -383,6 +502,7 @@ namespace BotState {
 
     void beginTrajectoryAttempt() {
         s_currentTrajectory.clear();
+        s_neuralSamples.clear();
         s_hasLastTrajectoryPoint = false;
         s_lastHold = false;
         resetExplorationPattern();
@@ -479,6 +599,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_segmentPlaybackActive = false;
         BotState::s_segmentPlaybackDone = false;
         BotState::s_currentAttempt = BotState::s_bestPath;
+        BotState::ensureNeuralNetwork();
 
         // Tworzenie Cheat Indicatora na ekranie gry
         auto winSize = CCDirector::sharedDirector()->getWinSize();
@@ -680,6 +801,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         }
 
         bool hold = false;
+        bool neuralExploration = false;
         if (frame < (int)knownLength) {
             hold = inputPath[frame].hold;
         } else {
@@ -687,9 +809,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             // by first looking for a similar remembered position and reusing
             // its next click decision. Use a varied pattern when memory has no
             // nearby match. Decisions are retained up to the tick limit.
-            hold = BotState::nextExploreHold(dt);
+            auto features = BotState::neuralFeatures(position, progress);
+            hold = BotState::nextNeuralHold(dt, features);
             bool startDelayActive = frame < BotState::s_startDelayTicks;
             if (startDelayActive) hold = false;
+            neuralExploration = !startDelayActive;
             auto const& guessInputs = BotState::s_trainingSegment && !BotState::s_segment.bestInputs.empty()
                 ? BotState::s_segment.bestInputs
                 : (this->m_isPracticeMode && !BotState::s_bestPracticePath.empty()
@@ -721,6 +845,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             if (BotState::s_segmentPlaybackActive) {
                 if (BotState::s_segmentPlaybackFrame < (int)BotState::s_segment.bestInputs.size()) {
                     hold = BotState::s_segment.bestInputs[BotState::s_segmentPlaybackFrame++].hold;
+                    neuralExploration = false;
                 } else {
                     BotState::s_segmentPlaybackActive = false;
                     BotState::s_segmentPlaybackDone = true;
@@ -753,6 +878,10 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         }
         BotState::s_lastHold = hold;
 
+        auto neuralSampleFeatures = BotState::neuralFeatures(position, progress);
+        if (BotState::s_neuralSamples.size() < (size_t)memoryLimit) {
+            BotState::s_neuralSamples.push_back({neuralSampleFeatures, hold, neuralExploration});
+        }
         BotState::recordTrajectoryPoint(position, click, progress);
 
         BotState::drawPlayerHitbox(playerRect);
@@ -860,6 +989,7 @@ class $modify(AIBotPlayer, PlayerObject) {
             ? BotState::s_segment.bestPercent
             : (practiceMode ? BotState::s_bestPracticeDistanceX : BotState::s_bestDistanceX);
         bool improved = currentPercent > previousBest;
+        BotState::trainNeuralOnOutcome(improved);
         double& score = practiceMode ? BotState::s_practiceScore : BotState::s_normalScore;
         auto deathPenalty = (int)Mod::get()->getSettingValue<int64_t>("learning-death-penalty");
         deathPenalty = std::clamp(deathPenalty, 0, 1000000);
