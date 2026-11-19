@@ -450,12 +450,13 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // frames produce rapid taps without repeated press events.
         int cpsLimit = (int)Mod::get()->getSettingValue<int64_t>("cps-limit");
         cpsLimit = std::max(1, cpsLimit);
+        float cpsTarget = std::max(1.0f, (float)cpsLimit * 0.8f);
         BotState::s_cpsCooldown = std::max(0.0f, BotState::s_cpsCooldown - dt);
         if (hold && !BotState::s_lastHold && BotState::s_cpsCooldown > 0.0f) {
             hold = false;
         }
         bool click = hold && !BotState::s_lastHold;
-        if (click) BotState::s_cpsCooldown = 1.0f / (float)cpsLimit;
+        if (click) BotState::s_cpsCooldown = 1.0f / cpsTarget;
         if (hold != BotState::s_lastHold) {
             this->handleButton(hold, 1, true);
         }
