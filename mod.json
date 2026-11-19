@@ -58,6 +58,12 @@
             "type": "bool",
             "default": true
         },
+        "show-prediction": {
+            "name": "Pokaz przewidywana trajektorie AI",
+            "description": "Rysuje fioletowy szacunek ruchu ikony na podstawie ostatnich tickow.",
+            "type": "bool",
+            "default": true
+        },
         "remove-stuck-checkpoints": {
             "name": "Usuwaj zablokowany checkpoint",
             "description": "Usuwa najnowszy checkpoint Practice Mode po ustawionej liczbie zgonow w prawie tym samym miejscu.",

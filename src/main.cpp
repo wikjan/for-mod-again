@@ -42,6 +42,7 @@ namespace BotState {
     inline int s_practiceScore = 0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
+    inline CCDrawNode* s_predictionNode = nullptr;
     inline std::vector<TrailPoint> s_currentTrajectory;
     inline std::vector<TrailPoint> s_bestTrajectory;
     inline bool s_hasLastTrajectoryPoint = false;
@@ -148,6 +149,44 @@ namespace BotState {
         s_hitboxNode->drawSegment(ccp(left, top), ccp(left, bottom), 1.5f, color);
     }
 
+    void drawPredictedTrajectory() {
+        if (!s_predictionNode) return;
+        s_predictionNode->clear();
+        if (!s_predictionNode->isVisible() || s_currentTrajectory.size() < 3) return;
+
+        auto count = s_currentTrajectory.size();
+        auto p0 = s_currentTrajectory[count - 3].position;
+        auto p1 = s_currentTrajectory[count - 2].position;
+        auto p2 = s_currentTrajectory[count - 1].position;
+        constexpr float tickRate = 60.0f;
+        constexpr float horizon = 0.5f;
+        auto velocity = ccp((p2.x - p1.x) * tickRate, (p2.y - p1.y) * tickRate);
+        auto acceleration = ccp(
+            (p2.x - 2.0f * p1.x + p0.x) * tickRate * tickRate,
+            (p2.y - 2.0f * p1.y + p0.y) * tickRate * tickRate
+        );
+
+        // Clamp spikes from portals/teleports so they do not send the preview
+        // across the whole screen for one frame.
+        auto accelerationLength = std::sqrt(acceleration.x * acceleration.x + acceleration.y * acceleration.y);
+        if (accelerationLength > 5000.0f) {
+            auto scale = 5000.0f / accelerationLength;
+            acceleration = ccp(acceleration.x * scale, acceleration.y * scale);
+        }
+
+        auto previous = p2;
+        auto color = ccc4f(0.85f, 0.2f, 1.0f, 0.9f);
+        for (int step = 1; step <= 30; ++step) {
+            auto time = horizon * (float)step / 30.0f;
+            auto next = ccp(
+                p2.x + velocity.x * time + 0.5f * acceleration.x * time * time,
+                p2.y + velocity.y * time + 0.5f * acceleration.y * time * time
+            );
+            s_predictionNode->drawSegment(previous, next, 2.0f, color);
+            previous = next;
+        }
+    }
+
     uint32_t nextExploreRandom() {
         s_exploreRandomSeed = s_exploreRandomSeed * 747796405u + 2891336453u;
         uint32_t value = ((s_exploreRandomSeed >> ((s_exploreRandomSeed >> 28) + 4)) ^ s_exploreRandomSeed) * 277803737u;
@@ -205,6 +244,7 @@ namespace BotState {
         s_lastHold = false;
         resetExplorationPattern();
         drawStoredTrajectory();
+        drawPredictedTrajectory();
     }
 
     void recordTrajectoryPoint(CCPoint position, bool click, float percent) {
@@ -321,6 +361,12 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_trajectoryNode = trajectory;
         if (this->m_objectLayer) this->m_objectLayer->addChild(trajectory, 1000);
 
+        auto prediction = CCDrawNode::create();
+        prediction->setID("ai-bot-prediction"_spr);
+        prediction->setVisible(Mod::get()->getSettingValue<bool>("show-prediction"));
+        BotState::s_predictionNode = prediction;
+        if (this->m_objectLayer) this->m_objectLayer->addChild(prediction, 1002);
+
         auto hitbox = CCDrawNode::create();
         hitbox->setID("ai-bot-hitbox"_spr);
         hitbox->setVisible(Mod::get()->getSettingValue<bool>("show-hitbox"));
@@ -380,6 +426,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
                                 playerRect.origin.y + playerRect.size.height * 0.5f);
             BotState::recordTrajectoryPoint(position, false, progress);
             BotState::drawPlayerHitbox(playerRect);
+            BotState::drawPredictedTrajectory();
             return;
         }
 
@@ -473,6 +520,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::recordTrajectoryPoint(position, click, progress);
 
         BotState::drawPlayerHitbox(playerRect);
+        BotState::drawPredictedTrajectory();
         if (frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         BotState::s_currentFrame++;
     }
@@ -487,6 +535,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_scoreLabel = nullptr;
         BotState::s_trajectoryNode = nullptr;
         BotState::s_hitboxNode = nullptr;
+        BotState::s_predictionNode = nullptr;
         BotState::s_hasLastTrajectoryPoint = false;
         PlayLayer::onExit();
     }
@@ -624,6 +673,7 @@ class $modify(AIBotPauseLayer, PauseLayer) {
         BotState::drawStoredTrajectory();
         if (auto playLayer = PlayLayer::get(); playLayer && playLayer->m_player1) {
             BotState::drawPlayerHitbox(playLayer->m_player1->getObjectRect());
+            BotState::drawPredictedTrajectory();
         }
 
         auto menu = this->getChildByID("right-button-menu");
@@ -688,6 +738,12 @@ $on_mod(Loaded) {
         if (!BotState::s_trajectoryNode) return;
         BotState::s_trajectoryNode->setVisible(visible);
         if (visible) BotState::drawStoredTrajectory();
+    });
+    listenForSettingChanges<bool>("show-prediction", [](bool visible) {
+        if (BotState::s_predictionNode) {
+            BotState::s_predictionNode->setVisible(visible);
+            if (visible) BotState::drawPredictedTrajectory();
+        }
     });
 }
 
