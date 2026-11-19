@@ -50,6 +50,12 @@
             "type": "bool",
             "default": true
         },
+        "remove-stuck-checkpoints": {
+            "name": "Usuwaj zablokowany checkpoint",
+            "description": "Usuwa najnowszy checkpoint Practice Mode po 20 zgonach w prawie tym samym miejscu.",
+            "type": "bool",
+            "default": true
+        },
         "auto-reset": {
             "name": "Szybki restart po smierci",
             "description": "Blyskawiczny respawn po zderzeniu z przeszkoda dla przyspieszenia uczenia.",

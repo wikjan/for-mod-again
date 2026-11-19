@@ -31,9 +31,13 @@ namespace BotState {
     inline bool s_enabled = false;
     inline int s_currentFrame = 0;
     inline std::vector<FrameDecision> s_bestPath;
+    inline std::vector<FrameDecision> s_candidatePath;
     inline std::vector<FrameDecision> s_currentAttempt;
     inline float s_bestDistanceX = 0.0f;
     inline int s_attemptsCount = 0;
+    inline float s_lastDeathPercent = -1000.0f;
+    inline int s_sameSpotDeaths = 0;
+    inline int s_score = 0;
     inline CCDrawNode* s_trajectoryNode = nullptr;
     inline CCDrawNode* s_hitboxNode = nullptr;
     inline std::vector<TrailPoint> s_currentTrajectory;
@@ -43,6 +47,7 @@ namespace BotState {
     inline float s_cpsCooldown = 0.0f;
     inline CCPoint s_lastTrajectoryPoint = CCPointZero;
     inline LearnedSegment s_segment;
+    inline std::vector<FrameDecision> s_segmentCandidate;
     inline std::vector<FrameDecision> s_segmentAttempt;
     inline bool s_trainingSegment = false;
     inline bool s_startPosTraining = false;
@@ -58,6 +63,41 @@ namespace BotState {
     inline CCDrawNode* s_indicatorDot = nullptr;
     inline CCLabelBMFont* s_indicatorLabel = nullptr;
     inline CCLabelBMFont* s_trajectoryLegend = nullptr;
+    inline CCLabelBMFont* s_scoreLabel = nullptr;
+
+    std::vector<FrameDecision> makeCandidate(
+        std::vector<FrameDecision> const& champion,
+        int deathFrame,
+        int mutationWindow,
+        uint32_t seed
+    ) {
+        auto candidate = champion;
+        if ((int)candidate.size() < deathFrame) candidate.resize(deathFrame, {false});
+        int first = std::max(0, deathFrame - mutationWindow);
+        int last = std::min(deathFrame - 1, (int)candidate.size() - 1);
+        int span = last - first + 1;
+        if (span <= 0) return candidate;
+
+        auto nextRandom = [&seed]() {
+            seed = seed * 747796405u + 2891336453u;
+            uint32_t value = ((seed >> ((seed >> 28) + 4)) ^ seed) * 277803737u;
+            return (value >> 22) ^ value;
+        };
+        int flips = 1 + (int)(nextRandom() % (uint32_t)std::min(4, span));
+        std::vector<bool> changed((size_t)span, false);
+        for (int i = 0; i < flips; ++i) {
+            int offset = (int)(nextRandom() % (uint32_t)span);
+            while (changed[(size_t)offset]) offset = (offset + 1) % span;
+            changed[(size_t)offset] = true;
+            candidate[(size_t)(first + offset)].hold = !candidate[(size_t)(first + offset)].hold;
+        }
+        return candidate;
+    }
+
+    void updateScoreLabel() {
+        if (!s_scoreLabel) return;
+        s_scoreLabel->setString(("LEARNING SCORE: " + std::to_string(s_score)).c_str());
+    }
 
     void drawStoredTrajectory() {
         if (!s_trajectoryNode) return;
@@ -140,11 +180,16 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_enabled = Mod::get()->getSettingValue<bool>("bot-enabled");
         BotState::s_currentFrame = 0;
         BotState::s_attemptsCount = 0;
+        BotState::s_lastDeathPercent = -1000.0f;
+        BotState::s_sameSpotDeaths = 0;
+        BotState::s_score = 0;
         BotState::s_bestDistanceX = 0.0f;
         BotState::s_bestPath.clear();
+        BotState::s_candidatePath.clear();
         BotState::s_bestTrajectory.clear();
         BotState::s_segment = {};
         BotState::s_segmentAttempt.clear();
+        BotState::s_segmentCandidate.clear();
         BotState::s_trainingSegment = false;
         BotState::s_startPosTraining = this->m_startPosObject != nullptr;
         BotState::s_autoPracticeTraining = false;
@@ -180,17 +225,24 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         hudNode->addChild(legend);
         BotState::s_trajectoryLegend = legend;
 
+        auto scoreLabel = CCLabelBMFont::create("LEARNING SCORE: 0", "chatFont.fnt");
+        scoreLabel->setScale(0.34f);
+        scoreLabel->setAnchorPoint(ccp(0.0f, 0.5f));
+        scoreLabel->setPosition(ccp(12.0f, -27.0f));
+        hudNode->addChild(scoreLabel);
+        BotState::s_scoreLabel = scoreLabel;
+
         auto trajectory = CCDrawNode::create();
         trajectory->setID("ai-bot-trajectory"_spr);
         trajectory->setVisible(Mod::get()->getSettingValue<bool>("show-trajectory"));
         BotState::s_trajectoryNode = trajectory;
-        this->addChild(trajectory, 1000);
+        if (this->m_objectLayer) this->m_objectLayer->addChild(trajectory, 1000);
 
         auto hitbox = CCDrawNode::create();
         hitbox->setID("ai-bot-hitbox"_spr);
         hitbox->setVisible(Mod::get()->getSettingValue<bool>("show-hitbox"));
         BotState::s_hitboxNode = hitbox;
-        this->addChild(hitbox, 1001);
+        if (this->m_objectLayer) this->m_objectLayer->addChild(hitbox, 1001);
         BotState::beginTrajectoryAttempt();
 
         this->addChild(hudNode);
@@ -218,9 +270,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             }
             BotState::s_segment.startPercent = startPercent;
             BotState::s_segment.bestPercent = std::max(BotState::s_segment.bestPercent, startPercent);
-            BotState::s_segmentAttempt = BotState::s_segment.bestInputs;
+            BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
+                ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
         } else {
-            BotState::s_currentAttempt = BotState::s_bestPath;
+            BotState::s_currentAttempt = BotState::s_candidatePath.empty()
+                ? BotState::s_bestPath : BotState::s_candidatePath;
         }
         this->handleButton(false, 1, true);
         BotState::beginTrajectoryAttempt();
@@ -240,7 +294,8 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             BotState::s_trainingSegment = true;
             BotState::s_segment.startPercent = progress;
             BotState::s_segment.bestPercent = progress;
-            BotState::s_segmentAttempt = BotState::s_segment.bestInputs;
+            BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
+                ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
             BotState::s_currentFrame = 0;
         }
 
@@ -253,7 +308,8 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             }
             BotState::s_segment.startPercent = progress;
             BotState::s_segment.bestPercent = progress;
-            BotState::s_segmentAttempt = BotState::s_segment.bestInputs;
+            BotState::s_segmentAttempt = BotState::s_segmentCandidate.empty()
+                ? BotState::s_segment.bestInputs : BotState::s_segmentCandidate;
             BotState::s_currentFrame = 0;
             BotState::beginTrajectoryAttempt();
         }
@@ -335,6 +391,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_indicatorDot = nullptr;
         BotState::s_indicatorLabel = nullptr;
         BotState::s_trajectoryLegend = nullptr;
+        BotState::s_scoreLabel = nullptr;
         BotState::s_trajectoryNode = nullptr;
         BotState::s_hitboxNode = nullptr;
         BotState::s_hasLastTrajectoryPoint = false;
@@ -356,20 +413,30 @@ class $modify(AIBotPlayer, PlayerObject) {
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
         int deathFrame = BotState::s_currentFrame;
         int mutationWindow = (int)Mod::get()->getSettingValue<int64_t>("learning-rate");
+        float previousBest = BotState::s_trainingSegment
+            ? BotState::s_segment.bestPercent : BotState::s_bestDistanceX;
+        bool improved = currentPercent > previousBest;
+        if (improved) {
+            auto gain = currentPercent - previousBest;
+            BotState::s_score += std::max(1, (int)std::round(gain * 10.0f));
+        } else {
+            BotState::s_score = std::max(0, BotState::s_score - 1);
+        }
+        BotState::updateScoreLabel();
 
-        int mutateFrom = std::max(0, deathFrame - mutationWindow);
         if (BotState::s_trainingSegment) {
-            if (currentPercent > BotState::s_segment.bestPercent) {
+            if (improved) {
                 BotState::s_segment.bestPercent = currentPercent;
                 BotState::s_segment.bestInputs = BotState::s_segmentAttempt;
                 BotState::s_segment.bestTrajectory = BotState::s_currentTrajectory;
                 BotState::drawStoredTrajectory();
             }
-
-            int mutateTo = std::min(deathFrame - 1, (int)BotState::s_segment.bestInputs.size() - 1);
-            for (int f = mutateFrom; f <= mutateTo; ++f) {
-                BotState::s_segment.bestInputs[f].hold = !BotState::s_segment.bestInputs[f].hold;
-            }
+            auto const& champion = BotState::s_segment.bestInputs.empty()
+                ? BotState::s_segmentAttempt : BotState::s_segment.bestInputs;
+            BotState::s_segmentCandidate = BotState::makeCandidate(
+                champion, deathFrame, mutationWindow,
+                (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
+            );
 
             // Once the trained section beats the previous full-run record,
             // leave Practice Mode and test the saved inputs in a full run.
@@ -388,7 +455,7 @@ class $modify(AIBotPlayer, PlayerObject) {
             }
         }
         else {
-            if (currentPercent > BotState::s_bestDistanceX) {
+            if (improved) {
                 BotState::s_bestDistanceX = currentPercent;
                 BotState::s_bestPath = BotState::s_currentAttempt;
                 BotState::s_bestTrajectory = BotState::s_currentTrajectory;
@@ -397,11 +464,12 @@ class $modify(AIBotPlayer, PlayerObject) {
             } else {
                 BotState::s_noProgressDeaths++;
             }
-
-            int mutateTo = std::min(deathFrame - 1, (int)BotState::s_bestPath.size() - 1);
-            for (int f = mutateFrom; f <= mutateTo; ++f) {
-                BotState::s_bestPath[f].hold = !BotState::s_bestPath[f].hold;
-            }
+            auto const& champion = BotState::s_bestPath.empty()
+                ? BotState::s_currentAttempt : BotState::s_bestPath;
+            BotState::s_candidatePath = BotState::makeCandidate(
+                champion, deathFrame, mutationWindow,
+                (uint32_t)(BotState::s_attemptsCount * 314159u + deathFrame)
+            );
 
             // After five deaths without a new record, add a Practice
             // checkpoint just before the stuck section and train from there.
@@ -412,6 +480,31 @@ class $modify(AIBotPlayer, PlayerObject) {
                 BotState::s_checkpointTargetPercent = std::max(0.0f, BotState::s_bestDistanceX - 2.0f);
                 BotState::s_noProgressDeaths = 0;
             }
+        }
+
+        if (pl && pl->m_isPracticeMode && pl->m_checkpointArray && pl->m_checkpointArray->count() > 0 &&
+            Mod::get()->getSettingValue<bool>("remove-stuck-checkpoints")) {
+            if (std::abs(currentPercent - BotState::s_lastDeathPercent) <= 0.25f) {
+                BotState::s_sameSpotDeaths++;
+            } else {
+                BotState::s_sameSpotDeaths = 1;
+            }
+            BotState::s_lastDeathPercent = currentPercent;
+
+            if (BotState::s_sameSpotDeaths >= 20) {
+                // In Geode's binding, false removes the newest checkpoint.
+                pl->removeCheckpoint(false);
+                BotState::s_sameSpotDeaths = 0;
+                BotState::s_lastDeathPercent = -1000.0f;
+                if (BotState::s_autoPracticeTraining) {
+                    BotState::s_autoPracticeTraining = false;
+                    BotState::s_autoCheckpointPlaced = false;
+                    BotState::s_trainingSegment = false;
+                }
+            }
+        } else {
+            BotState::s_sameSpotDeaths = 0;
+            BotState::s_lastDeathPercent = -1000.0f;
         }
 
         // Jesli wlaczony szybki restart
