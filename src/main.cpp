@@ -123,6 +123,54 @@ namespace BotState {
         return std::max(1, std::min(limit, (int)budgetTicks));
     }
 
+    std::string encodeClickPattern(std::vector<FrameDecision> const& path) {
+        static constexpr char digits[] = "0123456789abcdef";
+        auto count = std::min(path.size(), (size_t)inputMemoryLimit());
+        std::string packed;
+        if (count == 0) return packed;
+        packed.reserve(1 + (count + 3) / 4);
+        packed.push_back((char)('0' + (count % 4 == 0 ? 4 : count % 4)));
+        for (size_t i = 0; i < count; i += 4) {
+            unsigned nibble = 0;
+            for (size_t bit = 0; bit < 4 && i + bit < count; ++bit) {
+                if (path[i + bit].hold) nibble |= 1u << bit;
+            }
+            packed.push_back(digits[nibble]);
+        }
+        return packed;
+    }
+
+    std::vector<FrameDecision> decodeClickPattern(std::string const& packed) {
+        if (packed.empty() || packed[0] < '1' || packed[0] > '4') return {};
+        auto maxTicks = (size_t)inputMemoryLimit();
+        auto tailBits = (size_t)(packed[0] - '0');
+        auto count = std::min(maxTicks, (packed.size() - 1) * 4 - (4 - tailBits));
+        std::vector<FrameDecision> path(count, {false});
+        for (size_t i = 0; i < count; ++i) {
+            auto ch = packed[i / 4 + 1];
+            unsigned nibble;
+            if (ch >= '0' && ch <= '9') nibble = ch - '0';
+            else if (ch >= 'a' && ch <= 'f') nibble = ch - 'a' + 10;
+            else if (ch >= 'A' && ch <= 'F') nibble = ch - 'A' + 10;
+            else return {};
+            path[i].hold = (nibble & (1u << (i % 4))) != 0;
+        }
+        return path;
+    }
+
+    void saveBestClickPatterns() {
+        if (s_levelBestKey.empty()) return;
+        auto mod = Mod::get();
+        if (!s_bestPath.empty()) {
+            mod->setSavedValue(s_levelBestKey + ":muscle-normal", encodeClickPattern(s_bestPath));
+            mod->setSavedValue(s_levelBestKey + ":muscle-normal-percent", (double)s_bestDistanceX);
+        }
+        if (!s_bestPracticePath.empty()) {
+            mod->setSavedValue(s_levelBestKey + ":muscle-practice", encodeClickPattern(s_bestPracticePath));
+            mod->setSavedValue(s_levelBestKey + ":muscle-practice-percent", (double)s_bestPracticeDistanceX);
+        }
+    }
+
     float sigmoid(float value) {
         value = std::clamp(value, -16.0f, 16.0f);
         return 1.0f / (1.0f + std::exp(-value));
@@ -385,6 +433,22 @@ namespace BotState {
                 s_levelBestPercent = std::clamp(
                     (float)Mod::get()->getSavedValue<double>(s_levelBestKey), 0.0f, 100.0f);
             }
+            auto normalKey = s_levelBestKey + ":muscle-normal";
+            auto practiceKey = s_levelBestKey + ":muscle-practice";
+            if (Mod::get()->hasSavedValue(normalKey)) {
+                s_bestPath = decodeClickPattern(Mod::get()->getSavedValue<std::string>(normalKey));
+                s_bestDistanceX = std::clamp((float)Mod::get()->getSavedValue<double>(
+                    s_levelBestKey + ":muscle-normal-percent", 0.0), 0.0f, 100.0f);
+                s_candidatePath = s_bestPath;
+            }
+            if (Mod::get()->hasSavedValue(practiceKey)) {
+                s_bestPracticePath = decodeClickPattern(Mod::get()->getSavedValue<std::string>(practiceKey));
+                s_bestPracticeDistanceX = std::clamp((float)Mod::get()->getSavedValue<double>(
+                    s_levelBestKey + ":muscle-practice-percent", 0.0), 0.0f, 100.0f);
+                s_candidatePracticePath = s_bestPracticePath;
+            }
+            s_currentAttempt = s_practiceMode && !s_bestPracticePath.empty()
+                ? s_bestPracticePath : s_bestPath;
         }
         refreshLevelBestLabel();
     }
@@ -1079,6 +1143,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         PlayLayer::levelComplete();
         if (BotState::s_enabled) {
             BotState::noteBotLevelProgress(std::max(this->getCurrentPercent(), 100.0f));
+            BotState::saveBestClickPatterns();
         }
     }
 
@@ -1257,6 +1322,9 @@ class $modify(AIBotPlayer, PlayerObject) {
                 BotState::s_noProgressDeaths = 0;
             }
         }
+
+        // Persist each mode's best click pattern after every finished attempt.
+        BotState::saveBestClickPatterns();
 
         if (pl && pl->m_isPracticeMode && pl->m_checkpointArray && pl->m_checkpointArray->count() > 0) {
             if (Mod::get()->getSettingValue<bool>("remove-stuck-checkpoints")) {
