@@ -31,7 +31,7 @@ struct LearnedSegment {
     std::vector<TrailPoint> bestTrajectory;
 };
 
-constexpr size_t NEURAL_INPUTS = 7;
+constexpr size_t NEURAL_INPUTS = 8;
 struct NeuralSample {
     std::array<float, NEURAL_INPUTS> features{};
     bool hold = false;
@@ -147,8 +147,10 @@ namespace BotState {
         s_neuralOutputBias = 0.0f;
     }
 
-    std::array<float, NEURAL_INPUTS> neuralFeatures(CCPoint position, float percent) {
+    std::array<float, NEURAL_INPUTS> neuralFeatures(CCRect playerRect, float percent) {
         std::array<float, NEURAL_INPUTS> features{};
+        auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
+                            playerRect.origin.y + playerRect.size.height * 0.5f);
         features[0] = std::clamp(percent / 100.0f, 0.0f, 1.0f);
         features[1] = std::clamp(position.y / 600.0f, -1.0f, 1.0f);
         if (!s_currentTrajectory.empty()) {
@@ -158,14 +160,30 @@ namespace BotState {
         float nearestDistance = 10000.0f;
         float nearestDx = 1.0f;
         float nearestDy = 0.0f;
+        float nearestVerticalGap = 0.0f;
         bool foundHazard = false;
         for (auto const& rect : s_hazardRects) {
-            auto dx = rect.origin.x - position.x;
-            if (dx < -30.0f || dx > 300.0f) continue;
-            if (dx < nearestDistance) {
-                nearestDistance = dx;
-                nearestDx = std::clamp(dx / 300.0f, -0.1f, 1.0f);
+            auto playerLeft = playerRect.origin.x;
+            auto playerRight = playerLeft + playerRect.size.width;
+            auto playerBottom = playerRect.origin.y;
+            auto playerTop = playerBottom + playerRect.size.height;
+            auto hazardLeft = rect.origin.x;
+            auto hazardRight = hazardLeft + rect.size.width;
+            auto hazardBottom = rect.origin.y;
+            auto hazardTop = hazardBottom + rect.size.height;
+            if (hazardRight < playerLeft - 30.0f || hazardLeft > playerRight + 300.0f) continue;
+            auto edgeDx = hazardLeft - playerRight;
+            if (edgeDx < nearestDistance) {
+                nearestDistance = edgeDx;
+                nearestDx = std::clamp(edgeDx / 300.0f, -0.2f, 1.0f);
                 nearestDy = std::clamp((rect.origin.y + rect.size.height * 0.5f - position.y) / 200.0f, -1.0f, 1.0f);
+                if (hazardBottom > playerTop) {
+                    nearestVerticalGap = hazardBottom - playerTop;
+                } else if (playerBottom > hazardTop) {
+                    nearestVerticalGap = hazardTop - playerBottom;
+                } else {
+                    nearestVerticalGap = 0.0f;
+                }
                 foundHazard = true;
             }
         }
@@ -173,6 +191,7 @@ namespace BotState {
         features[4] = foundHazard ? nearestDy : 0.0f;
         features[5] = foundHazard ? 1.0f : 0.0f;
         features[6] = s_practiceMode ? 1.0f : 0.0f;
+        features[7] = foundHazard ? std::clamp(nearestVerticalGap / 200.0f, -1.0f, 1.0f) : 0.0f;
         return features;
     }
 
@@ -938,7 +957,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             // by first looking for a similar remembered position and reusing
             // its next click decision. Use a varied pattern when memory has no
             // nearby match. Decisions are retained up to the tick limit.
-            auto features = BotState::neuralFeatures(position, progress);
+            auto features = BotState::neuralFeatures(playerRect, progress);
             hold = BotState::nextNeuralHold(dt, features);
             bool startDelayActive = frame < BotState::s_startDelayTicks;
             if (startDelayActive) hold = false;
@@ -1012,7 +1031,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         }
         BotState::s_lastHold = hold;
 
-        auto neuralSampleFeatures = BotState::neuralFeatures(position, progress);
+        auto neuralSampleFeatures = BotState::neuralFeatures(playerRect, progress);
         if (BotState::s_neuralSamples.size() < (size_t)memoryLimit) {
             BotState::s_neuralSamples.push_back({neuralSampleFeatures, hold, neuralExploration});
         }
@@ -1054,9 +1073,9 @@ class $modify(AIBotPlayLayer, PlayLayer) {
     }
 };
 
-// Cache the collision rectangles Geometry Dash checks for spikes, saws and
-// other lethal objects around player one. The drawing and learner can then
-// use the same geometry that the game uses for collision checks.
+// Cache the collision rectangles Geometry Dash checks around player one,
+// including solid blocks and lethal objects. The drawing and learner can use
+// the same geometry that the game uses for collision checks.
 class $modify(AIBotBaseGameLayer, GJBaseGameLayer) {
     void collisionCheckObjects(PlayerObject* player, std::vector<GameObject*>* objects, int count, float dt) {
         auto play = PlayLayer::get();
@@ -1066,10 +1085,7 @@ class $modify(AIBotBaseGameLayer, GJBaseGameLayer) {
                 for (int i = 0; i < count; ++i) {
                     auto* object = (*objects)[i];
                     if (!object) continue;
-                    auto type = object->m_objectType;
-                    if (type == GameObjectType::Hazard || type == GameObjectType::AnimatedHazard) {
-                        BotState::s_hazardRects.push_back(object->getObjectRect());
-                    }
+                    BotState::s_hazardRects.push_back(object->getObjectRect());
                 }
             }
         }
