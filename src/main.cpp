@@ -103,6 +103,11 @@ namespace BotState {
     inline size_t s_activeSynapses = 0;
     inline float s_meanActivation = 0.0f;
     inline float s_neuralMonitorRefreshSeconds = 0.0f;
+    inline float s_liveOverlayRefreshSeconds = 0.0f;
+    inline float s_scoreLabelRefreshSeconds = 0.0f;
+    inline bool s_indicatorRendered = false;
+    inline bool s_indicatorLastShown = false;
+    inline bool s_indicatorLastEnabled = false;
     inline std::vector<std::array<float, NEURAL_INPUTS>> s_neuralWeights;
     inline std::vector<float> s_neuralBiases;
     inline std::vector<float> s_neuralOutputWeights;
@@ -206,6 +211,10 @@ namespace BotState {
             auto dy = position.y - s_currentTrajectory.back().position.y;
             features[2] = std::clamp(dy / 20.0f, -1.0f, 1.0f);
         }
+        auto playerLeft = playerRect.origin.x;
+        auto playerRight = playerLeft + playerRect.size.width;
+        auto playerBottom = playerRect.origin.y;
+        auto playerTop = playerBottom + playerRect.size.height;
         float nearestDistance = 10000.0f;
         float nearestDx = 1.0f;
         float nearestDy = 0.0f;
@@ -217,10 +226,6 @@ namespace BotState {
         bool foundHazard = false;
         bool foundSecondHazard = false;
         for (auto const& rect : s_hazardRects) {
-            auto playerLeft = playerRect.origin.x;
-            auto playerRight = playerLeft + playerRect.size.width;
-            auto playerBottom = playerRect.origin.y;
-            auto playerTop = playerBottom + playerRect.size.height;
             auto hazardLeft = rect.origin.x;
             auto hazardRight = hazardLeft + rect.size.width;
             auto hazardBottom = rect.origin.y;
@@ -330,22 +335,28 @@ namespace BotState {
     void trainNeuralOnOutcome(bool improved) {
         if (s_neuralSamples.empty()) return;
         ensureNeuralNetwork();
+        // Bound total update work, not only sample count: each sample costs
+        // roughly one forward and one backward pass through the full network.
+        constexpr size_t maxTrainingWork = 3200000;
+        auto workPerSample = std::max<size_t>(1, s_neuralWeights.size() * (NEURAL_INPUTS * 2 + 2));
+        auto sampleBudget = std::clamp<size_t>(maxTrainingWork / workPerSample, 1, 256);
         if (improved) {
-            // Bound the amount of work per record regardless of layer width.
-            auto sampleBudget = std::clamp<size_t>(1280000u / s_neuralWeights.size(), 16, 256);
-            auto stride = std::max<size_t>(1, s_neuralSamples.size() / sampleBudget);
+            auto stride = std::max<size_t>(1, (s_neuralSamples.size() + sampleBudget - 1) / sampleBudget);
             for (size_t i = 0; i < s_neuralSamples.size(); i += stride) {
                 trainNeuralSample(s_neuralSamples[i], 0.003f);
             }
         } else {
-            // Death is a negative outcome for the final local pattern; try the
-            // opposite decisions nearby while the mutation search tests them.
+            // Train on the newest exploratory decisions first, up to the same
+            // work budget, so a large network does not freeze on death.
             auto start = s_neuralSamples.size() > 12 ? s_neuralSamples.size() - 12 : 0;
-            for (size_t i = start; i < s_neuralSamples.size(); ++i) {
+            size_t trained = 0;
+            for (size_t i = s_neuralSamples.size(); i > start && trained < sampleBudget;) {
+                --i;
                 if (!s_neuralSamples[i].exploratory) continue;
                 auto alternative = s_neuralSamples[i];
                 alternative.hold = !alternative.hold;
                 trainNeuralSample(alternative, 0.001f);
+                ++trained;
             }
         }
     }
@@ -471,11 +482,17 @@ namespace BotState {
         s_trajectoryNode->clear();
         auto drawPath = [](std::vector<TrailPoint> const& path, ccColor4F lineColor, ccColor4F clickColor) {
             if (path.empty()) return;
-            for (size_t i = 1; i < path.size(); ++i) {
-                s_trajectoryNode->drawSegment(path[i - 1].position, path[i].position, 1.5f, lineColor);
+            constexpr size_t maxSegments = 1500;
+            auto stride = std::max<size_t>(1, (path.size() - 1 + maxSegments - 1) / maxSegments);
+            for (size_t i = stride; i < path.size(); i += stride) {
+                s_trajectoryNode->drawSegment(path[i - stride].position, path[i].position, 1.5f, lineColor);
             }
+            auto clickStride = std::max<size_t>(1, (path.size() + 999) / 1000);
+            size_t clickIndex = 0;
             for (auto const& point : path) {
-                if (point.click) s_trajectoryNode->drawDot(point.position, 4.0f, clickColor);
+                if (point.click && clickIndex++ % clickStride == 0) {
+                    s_trajectoryNode->drawDot(point.position, 4.0f, clickColor);
+                }
             }
         };
 
@@ -538,6 +555,7 @@ namespace BotState {
         constexpr float tickRate = 60.0f;
         int predictionSteps = (int)Mod::get()->getSettingValue<int64_t>("prediction-steps");
         predictionSteps = std::clamp(predictionSteps, 5, 2500);
+        int drawStride = std::max(1, (predictionSteps + 249) / 250);
         auto velocity = ccp((p2.x - p1.x) * tickRate, (p2.y - p1.y) * tickRate);
         auto acceleration = ccp(
             (p2.x - 2.0f * p1.x + p0.x) * tickRate * tickRate,
@@ -562,34 +580,32 @@ namespace BotState {
             ? s_segment.bestTrajectory
             : (s_practiceMode && !s_bestPracticeTrajectory.empty()
                 ? s_bestPracticeTrajectory : s_bestTrajectory);
-        if (!memory.empty()) {
-            auto currentPercent = s_currentTrajectory.back().percent;
-            auto it = std::lower_bound(memory.begin(), memory.end(), currentPercent,
-                [](TrailPoint const& point, float target) { return point.percent < target; });
-            if (it != memory.end()) {
-                auto memoryStart = it->position;
-                auto offset = ccp(p2.x - memoryStart.x, p2.y - memoryStart.y);
-                auto previousMemory = p2;
-                int drawn = 0;
-                for (++it; it != memory.end() && drawn < predictionSteps; ++it, ++drawn) {
-                    auto nextMemory = ccp(it->position.x + offset.x, it->position.y + offset.y);
-                    s_predictionNode->drawSegment(previousMemory, nextMemory, 2.0f, color);
-                    previousMemory = nextMemory;
-                }
-                if (drawn > 0) previous = previousMemory;
-            }
-        }
-
-        // If the remembered route ends before the configured horizon, extend
-        // the preview with the current motion estimate instead of truncating it.
+        // Align the remembered route once, then draw a bounded sample of its
+        // future points. This preserves the full forecast horizon without
+        // submitting thousands of draw calls each refresh.
         int memorySteps = 0;
         if (!memory.empty()) {
             auto currentPercent = s_currentTrajectory.back().percent;
             auto it = std::lower_bound(memory.begin(), memory.end(), currentPercent,
                 [](TrailPoint const& point, float target) { return point.percent < target; });
-            if (it != memory.end()) memorySteps = (int)std::distance(it, memory.end()) - 1;
+            if (it != memory.end()) {
+                memorySteps = (int)std::distance(it, memory.end()) - 1;
+                auto memoryStart = it->position;
+                auto offset = ccp(p2.x - memoryStart.x, p2.y - memoryStart.y);
+                auto previousMemory = p2;
+                for (int step = drawStride; step <= std::min(predictionSteps, memorySteps); step += drawStride) {
+                    auto const& point = *(it + step);
+                    auto nextMemory = ccp(point.position.x + offset.x, point.position.y + offset.y);
+                    s_predictionNode->drawSegment(previousMemory, nextMemory, 2.0f, color);
+                    previousMemory = nextMemory;
+                }
+                if (memorySteps > 0) previous = previousMemory;
+            }
         }
-        for (int step = std::max(1, memorySteps + 1); step <= predictionSteps; ++step) {
+
+        // If the remembered route ends before the configured horizon, extend
+        // the preview with the current motion estimate instead of truncating it.
+        for (int step = std::max(1, memorySteps + 1); step <= predictionSteps; step += drawStride) {
             auto time = (float)step / tickRate;
             auto next = ccp(
                 p2.x + velocity.x * time + 0.5f * acceleration.x * time * time,
@@ -599,6 +615,15 @@ namespace BotState {
             previous = next;
         }
         s_predictionNode->drawDot(previous, 3.5f, color);
+    }
+
+    void refreshLiveOverlays(CCRect const& playerRect, float dt) {
+        s_liveOverlayRefreshSeconds += std::max(0.0f, dt);
+        if (s_liveOverlayRefreshSeconds < 0.1f) return;
+        s_liveOverlayRefreshSeconds = 0.0f;
+        drawPlayerHitbox(playerRect);
+        drawHazardHitboxes();
+        drawPredictedTrajectory();
     }
 
     uint32_t nextExploreRandom() {
@@ -650,6 +675,7 @@ namespace BotState {
 
     bool guessFromSimilarMemory(
         CCPoint position,
+        float percent,
         std::vector<FrameDecision> const& inputs,
         std::vector<TrailPoint> const& trajectory,
         bool& guessedHold,
@@ -660,13 +686,44 @@ namespace BotState {
 
         float closestDistanceSquared = maxDistance * maxDistance;
         size_t closest = count;
-        for (size_t i = 0; i < count; ++i) {
+        auto percentIt = std::lower_bound(trajectory.begin(), trajectory.begin() + count, percent,
+            [](TrailPoint const& point, float target) { return point.percent < target; });
+        auto center = (size_t)std::distance(trajectory.begin(), percentIt);
+        auto first = center > 256 ? center - 256 : 0;
+        auto last = std::min(count, center + 257);
+        for (size_t i = first; i < last; ++i) {
             auto dx = trajectory[i].position.x - position.x;
             auto dy = trajectory[i].position.y - position.y;
             auto distanceSquared = dx * dx + dy * dy;
             if (distanceSquared < closestDistanceSquared) {
                 closestDistanceSquared = distanceSquared;
                 closest = i;
+            }
+        }
+        if (closest == count) {
+            auto stride = std::max<size_t>(1, (count + 255) / 256);
+            for (size_t i = 0; i < count; i += stride) {
+                auto dx = trajectory[i].position.x - position.x;
+                auto dy = trajectory[i].position.y - position.y;
+                auto distanceSquared = dx * dx + dy * dy;
+                if (distanceSquared < closestDistanceSquared) {
+                    closestDistanceSquared = distanceSquared;
+                    closest = i;
+                }
+            }
+            if (closest != count) {
+                auto coarse = closest;
+                auto refineFirst = coarse > stride ? coarse - stride : 0;
+                auto refineLast = std::min(count, coarse + stride + 1);
+                for (size_t i = refineFirst; i < refineLast; ++i) {
+                    auto dx = trajectory[i].position.x - position.x;
+                    auto dy = trajectory[i].position.y - position.y;
+                    auto distanceSquared = dx * dx + dy * dy;
+                    if (distanceSquared < closestDistanceSquared) {
+                        closestDistanceSquared = distanceSquared;
+                        closest = i;
+                    }
+                }
             }
         }
         if (closest == count || closest + 1 >= count) return false;
@@ -692,6 +749,7 @@ namespace BotState {
     void beginTrajectoryAttempt() {
         s_currentTrajectory.clear();
         s_neuralSamples.clear();
+        s_liveOverlayRefreshSeconds = 0.0f;
         s_hasLastTrajectoryPoint = false;
         s_lastHold = false;
         resetExplorationPattern();
@@ -728,6 +786,10 @@ namespace BotState {
         if (!s_indicatorDot || !s_indicatorLabel) return;
 
         bool show = Mod::get()->getSettingValue<bool>("cheat-indicator");
+        if (s_indicatorRendered && show == s_indicatorLastShown && s_enabled == s_indicatorLastEnabled) return;
+        s_indicatorRendered = true;
+        s_indicatorLastShown = show;
+        s_indicatorLastEnabled = s_enabled;
         s_indicatorDot->setVisible(show);
         s_indicatorLabel->setVisible(show);
 
@@ -809,6 +871,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         label->setPosition(ccp(12.0f, 0.0f));
         hudNode->addChild(label);
         BotState::s_indicatorLabel = label;
+        BotState::s_indicatorRendered = false;
 
         auto legend = CCLabelBMFont::create("TRAIL: red=click gold=normal-best green=practice-best cyan=current purple=prediction", "chatFont.fnt");
         legend->setScale(0.34f);
@@ -958,7 +1021,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
                             playerRect.origin.y + playerRect.size.height * 0.5f);
         if (BotState::s_enabled && dt > 0.0f) {
             BotState::s_neuralMonitorRefreshSeconds += dt;
-            if (BotState::s_neuralMonitorRefreshSeconds >= 0.25f) {
+            if (BotState::s_neuralMonitorRefreshSeconds >= 1.0f) {
                 BotState::s_neuralMonitorRefreshSeconds = 0.0f;
                 // Refresh the monitor from the current state even while the
                 // bot is replaying a remembered path and makes no neural call.
@@ -972,9 +1035,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
                                 playerRect.origin.y + playerRect.size.height * 0.5f);
             BotState::recordTrajectoryPoint(position, false, progress);
-            BotState::drawPlayerHitbox(playerRect);
-            BotState::drawHazardHitboxes();
-            BotState::drawPredictedTrajectory();
+            BotState::refreshLiveOverlays(playerRect, dt);
             return;
         }
 
@@ -994,7 +1055,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         tickRewardHundredths = std::clamp(tickRewardHundredths, 0, 100);
         learningScore = std::clamp(learningScore + tickRewardHundredths / 100.0,
                                    -BotState::s_scoreLimit, BotState::s_scoreLimit);
-        BotState::updateScoreLabel();
+        BotState::s_scoreLabelRefreshSeconds += std::max(0.0f, dt);
+        if (BotState::s_scoreLabelRefreshSeconds >= 0.25f) {
+            BotState::s_scoreLabelRefreshSeconds = 0.0f;
+            BotState::updateScoreLabel();
+        }
 
         if (this->m_isPracticeMode &&
             Mod::get()->getSettingValue<bool>("exit-practice-at-percent")) {
@@ -1043,6 +1108,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             inputPath.resize(frame + 1, {false});
         }
 
+        auto neuralSampleFeatures = BotState::neuralFeatures(playerRect, progress);
         bool hold = false;
         bool neuralExploration = false;
         if (frame < (int)knownLength) {
@@ -1052,8 +1118,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             // by first looking for a similar remembered position and reusing
             // its next click decision. Use a varied pattern when memory has no
             // nearby match. Decisions are retained up to the tick limit.
-            auto features = BotState::neuralFeatures(playerRect, progress);
-            hold = BotState::nextNeuralHold(dt, features);
+            hold = BotState::nextNeuralHold(dt, neuralSampleFeatures);
             bool startDelayActive = frame < BotState::s_startDelayTicks;
             if (startDelayActive) hold = false;
             neuralExploration = !startDelayActive;
@@ -1069,11 +1134,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             bool usedPracticeGuess = false;
             if (!startDelayActive && BotState::s_allowPracticeMemoryGuess) {
                 usedPracticeGuess = BotState::guessFromSimilarMemory(
-                    position, BotState::s_bestPracticePath,
+                    position, progress, BotState::s_bestPracticePath,
                     BotState::s_bestPracticeTrajectory, rememberedGuess, 160.0f);
             }
             if (!startDelayActive && !usedPracticeGuess &&
-                !BotState::guessFromSimilarMemory(position, guessInputs, guessTrajectory, rememberedGuess)) {
+                !BotState::guessFromSimilarMemory(position, progress, guessInputs, guessTrajectory, rememberedGuess)) {
                 rememberedGuess = hold;
             }
             if (!startDelayActive) hold = rememberedGuess;
@@ -1126,15 +1191,12 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         }
         BotState::s_lastHold = hold;
 
-        auto neuralSampleFeatures = BotState::neuralFeatures(playerRect, progress);
         if (BotState::s_neuralSamples.size() < (size_t)memoryLimit) {
             BotState::s_neuralSamples.push_back({neuralSampleFeatures, hold, neuralExploration});
         }
         BotState::recordTrajectoryPoint(position, click, progress);
 
-        BotState::drawPlayerHitbox(playerRect);
-        BotState::drawHazardHitboxes();
-        BotState::drawPredictedTrajectory();
+        BotState::refreshLiveOverlays(playerRect, dt);
         if (frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         BotState::s_currentFrame++;
     }
