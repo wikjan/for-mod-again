@@ -10,6 +10,7 @@
 #include <cmath>
 #include <cstdint>
 #include <array>
+#include <string>
 
 using namespace geode::prelude;
 
@@ -91,6 +92,16 @@ namespace BotState {
     inline CCLabelBMFont* s_trajectoryLegend = nullptr;
     inline CCLabelBMFont* s_scoreLabel = nullptr;
     inline CCLabelBMFont* s_deathAnalysisLabel = nullptr;
+    inline CCLabelBMFont* s_neuralMonitorLabel = nullptr;
+    inline CCLabelBMFont* s_levelTimeLabel = nullptr;
+    inline CCLabelBMFont* s_levelBestLabel = nullptr;
+    inline float s_levelActiveSeconds = 0.0f;
+    inline float s_levelTimerRefresh = 0.0f;
+    inline float s_levelBestPercent = 0.0f;
+    inline std::string s_levelBestKey;
+    inline size_t s_activeNeurons = 0;
+    inline size_t s_activeSynapses = 0;
+    inline float s_meanActivation = 0.0f;
     inline std::vector<std::array<float, NEURAL_INPUTS>> s_neuralWeights;
     inline std::vector<float> s_neuralBiases;
     inline std::vector<float> s_neuralOutputWeights;
@@ -169,15 +180,41 @@ namespace BotState {
                            std::vector<float>* activations = nullptr) {
         ensureNeuralNetwork();
         float output = s_neuralOutputBias;
+        size_t activeNeurons = 0;
+        size_t activeSynapses = 0;
+        float activationTotal = 0.0f;
+        size_t synapseCount = 0;
         if (activations) activations->clear();
         for (size_t i = 0; i < s_neuralWeights.size(); ++i) {
             float sum = s_neuralBiases[i];
-            for (size_t j = 0; j < NEURAL_INPUTS; ++j) sum += s_neuralWeights[i][j] * features[j];
+            for (size_t j = 0; j < NEURAL_INPUTS; ++j) {
+                auto weight = s_neuralWeights[i][j];
+                sum += weight * features[j];
+                ++synapseCount;
+                if (std::abs(weight) >= 0.005f && std::abs(features[j]) >= 0.01f) ++activeSynapses;
+            }
             // Clipped linear activation is much cheaper than tanh and bounded
             // activations keep the output layer numerically stable.
             auto activation = std::clamp(sum, -1.0f, 1.0f);
+            activationTotal += std::abs(activation);
+            if (std::abs(activation) >= 0.25f) ++activeNeurons;
             if (activations) activations->push_back(activation);
-            output += s_neuralOutputWeights[i] * activation;
+            auto outputWeight = s_neuralOutputWeights[i];
+            ++synapseCount;
+            if (std::abs(outputWeight) >= 0.005f && std::abs(activation) >= 0.01f) ++activeSynapses;
+            output += outputWeight * activation;
+        }
+        if (!activations) {
+            s_activeNeurons = activeNeurons;
+            s_activeSynapses = activeSynapses;
+            s_meanActivation = s_neuralWeights.empty() ? 0.0f : activationTotal / (float)s_neuralWeights.size();
+            if (s_neuralMonitorLabel) {
+                auto status = "SPIKES: " + std::to_string(s_activeNeurons) + " / " +
+                    std::to_string(s_neuralWeights.size()) + "   SYNAPSES: " +
+                    std::to_string(s_activeSynapses) + " / " + std::to_string(synapseCount) +
+                    "   MEAN: " + std::to_string((int)std::round(s_meanActivation * 100.0f)) + "%";
+                s_neuralMonitorLabel->setString(status.c_str());
+            }
         }
         return sigmoid(output);
     }
@@ -275,6 +312,50 @@ namespace BotState {
             " | PRACTICE: " + formatScore(s_practiceScore) +
             " | TOTAL: " + formatScore(total);
         s_scoreLabel->setString(text.c_str());
+    }
+
+    std::string formatLevelPercent(float percent) {
+        percent = std::clamp(percent, 0.0f, 100.0f);
+        int tenths = (int)std::lround(percent * 10.0);
+        tenths = std::clamp(tenths, 0, 1000);
+        return std::to_string(tenths / 10) + "." + std::to_string(tenths % 10);
+    }
+
+    void refreshLevelBestLabel() {
+        if (!s_levelBestLabel) return;
+        auto text = "LEVEL BEST: " + formatLevelPercent(s_levelBestPercent) + "%";
+        s_levelBestLabel->setString(text.c_str());
+    }
+
+    void bindLevelBest(GJGameLevel* level) {
+        s_levelBestKey.clear();
+        s_levelBestPercent = 0.0f;
+        if (level) {
+            int id = level->m_levelID;
+            if (id > 0) {
+                s_levelBestKey = "bot-level-best:" + std::to_string(id);
+            } else {
+                auto name = level->m_levelName.empty() ? std::string("unnamed") : level->m_levelName;
+                s_levelBestKey = "bot-level-best:local:" + std::to_string(level->m_levelIndex) + ":" + name;
+            }
+            if (Mod::get()->hasSavedValue(s_levelBestKey)) {
+                s_levelBestPercent = std::clamp(
+                    (float)Mod::get()->getSavedValue<double>(s_levelBestKey), 0.0f, 100.0f);
+            }
+        }
+        refreshLevelBestLabel();
+    }
+
+    // The bot's furthest percent on this level. Practice and normal runs share
+    // one record, and it stays saved after leaving the level.
+    void noteBotLevelProgress(float percent) {
+        percent = std::clamp(percent, 0.0f, 100.0f);
+        if (percent <= s_levelBestPercent + 0.049f) return;
+        s_levelBestPercent = percent;
+        refreshLevelBestLabel();
+        if (!s_levelBestKey.empty()) {
+            Mod::get()->setSavedValue(s_levelBestKey, (double)s_levelBestPercent);
+        }
     }
 
     void drawStoredTrajectory() {
@@ -427,7 +508,7 @@ namespace BotState {
         s_startDelayTicks = 0;
         bool hasChampion = s_practiceMode
             ? !s_bestPracticePath.empty() : !s_bestPath.empty();
-        if (!hasChampion && nextExploreRandom() % 100u < 20u) {
+        if (nextExploreRandom() % 100u < (hasChampion ? 15u : 20u)) {
             s_startDelayTicks = 12 + (int)(nextExploreRandom() % 49u);
         }
         s_allowPracticeMemoryGuess = !s_practiceMode &&
@@ -440,7 +521,7 @@ namespace BotState {
             auto probability = neuralPrediction(features);
             auto draw = (float)(nextExploreRandom() % 10000u) / 10000.0f;
             s_exploreHold = draw < probability;
-            // Keep decisions stable for natural 0.1â€“2.0 second intervals;
+            // Keep decisions stable for natural 0.1–2.0 second intervals;
             // the network chooses the action, while this clock avoids jitter.
             s_exploreRemainingSeconds = 0.1f + (float)(nextExploreRandom() % 1901u) / 1000.0f;
         }
@@ -601,6 +682,8 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_segmentPlaybackDone = false;
         BotState::s_currentAttempt = BotState::s_bestPath;
         BotState::ensureNeuralNetwork();
+        BotState::s_levelActiveSeconds = 0.0f;
+        BotState::s_levelTimerRefresh = 0.0f;
 
         // Tworzenie Cheat Indicatora na ekranie gry
         auto winSize = CCDirector::sharedDirector()->getWinSize();
@@ -641,6 +724,35 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         deathAnalysis->setPosition(ccp(12.0f, -39.0f));
         hudNode->addChild(deathAnalysis);
         BotState::s_deathAnalysisLabel = deathAnalysis;
+
+        auto neuralTitle = CCLabelBMFont::create("NEURAL ACTIVITY", "chatFont.fnt");
+        neuralTitle->setScale(0.42f);
+        neuralTitle->setAnchorPoint(ccp(1.0f, 0.5f));
+        neuralTitle->setPosition(ccp(winSize.width - 12.0f, 0.0f));
+        hudNode->addChild(neuralTitle);
+
+        auto neuralMonitor = CCLabelBMFont::create("SPIKES: 0 / 0   SYNAPSES: 0 / 0   MEAN: 0%", "chatFont.fnt");
+        neuralMonitor->setScale(0.34f);
+        neuralMonitor->setAnchorPoint(ccp(1.0f, 0.5f));
+        neuralMonitor->setPosition(ccp(winSize.width - 12.0f, -12.0f));
+        hudNode->addChild(neuralMonitor);
+        BotState::s_neuralMonitorLabel = neuralMonitor;
+
+        auto levelTimer = CCLabelBMFont::create("BOT ACTIVE: 00:00", "chatFont.fnt");
+        levelTimer->setScale(0.38f);
+        levelTimer->setAnchorPoint(ccp(1.0f, 0.5f));
+        levelTimer->setPosition(ccp(winSize.width - 12.0f, -25.0f));
+        hudNode->addChild(levelTimer);
+        BotState::s_levelTimeLabel = levelTimer;
+
+        auto levelBest = CCLabelBMFont::create("LEVEL BEST: 0.0%", "chatFont.fnt");
+        levelBest->setScale(0.38f);
+        levelBest->setAnchorPoint(ccp(1.0f, 0.5f));
+        levelBest->setPosition(ccp(winSize.width - 12.0f, -38.0f));
+        levelBest->setColor(ccc3(255, 214, 90));
+        hudNode->addChild(levelBest);
+        BotState::s_levelBestLabel = levelBest;
+        BotState::bindLevelBest(level);
 
         auto trajectory = CCDrawNode::create();
         trajectory->setID("ai-bot-trajectory"_spr);
@@ -719,6 +831,18 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         // Keep the HUD in sync when the bot is toggled from the pause menu.
         BotState::refreshIndicator();
 
+        if (BotState::s_enabled && dt > 0.0f) {
+            BotState::s_levelActiveSeconds += dt;
+            BotState::s_levelTimerRefresh += dt;
+            if (BotState::s_levelTimeLabel && BotState::s_levelTimerRefresh >= 0.25f) {
+                BotState::s_levelTimerRefresh = 0.0f;
+                auto totalSeconds = (int)BotState::s_levelActiveSeconds;
+                auto timeText = "BOT ACTIVE: " + std::to_string(totalSeconds / 60) + ":" +
+                    (totalSeconds % 60 < 10 ? "0" : "") + std::to_string(totalSeconds % 60);
+                BotState::s_levelTimeLabel->setString(timeText.c_str());
+            }
+        }
+
         if (!this->m_player1 || this->m_player1->m_isDead) return;
 
         float progress = this->getCurrentPercent();
@@ -737,6 +861,8 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             BotState::drawPredictedTrajectory();
             return;
         }
+
+        BotState::noteBotLevelProgress(progress);
 
         if (BotState::s_postDeathCooldown > 0.0f) {
             BotState::s_postDeathCooldown = std::max(0.0f, BotState::s_postDeathCooldown - dt);
@@ -838,6 +964,11 @@ class $modify(AIBotPlayLayer, PlayLayer) {
             if (canStoreInput && frame < (int)inputPath.size()) inputPath[frame].hold = hold;
         }
 
+        if (frame < BotState::s_startDelayTicks) {
+            hold = false;
+            neuralExploration = false;
+        }
+
         if (!BotState::s_trainingSegment && !BotState::s_segment.bestInputs.empty()) {
             if (!BotState::s_segmentPlaybackActive && !BotState::s_segmentPlaybackDone && progress >= BotState::s_segment.startPercent) {
                 BotState::s_segmentPlaybackActive = true;
@@ -870,7 +1001,7 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         bool click = hold && !BotState::s_lastHold;
         if (click) {
             BotState::s_cpsCooldown = 1.0f / cpsTarget;
-            // Add natural variation to rapid tap spacing: wait 12â€“18 game ticks.
+            // Add natural variation to rapid tap spacing: wait 12–18 game ticks.
             BotState::s_naturalClickCooldownTicks = 12 + (int)(BotState::nextExploreRandom() % 7u);
         }
         if (hold != BotState::s_lastHold) {
@@ -892,6 +1023,13 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_currentFrame++;
     }
 
+    void levelComplete() {
+        PlayLayer::levelComplete();
+        if (BotState::s_enabled) {
+            BotState::noteBotLevelProgress(std::max(this->getCurrentPercent(), 100.0f));
+        }
+    }
+
     void onExit() {
         // These nodes belong to this PlayLayer. Clear the cached pointers
         // before the layer releases its children so setting listeners cannot
@@ -901,6 +1039,9 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         BotState::s_trajectoryLegend = nullptr;
         BotState::s_scoreLabel = nullptr;
         BotState::s_deathAnalysisLabel = nullptr;
+        BotState::s_neuralMonitorLabel = nullptr;
+        BotState::s_levelTimeLabel = nullptr;
+        BotState::s_levelBestLabel = nullptr;
         BotState::s_trajectoryNode = nullptr;
         BotState::s_hitboxNode = nullptr;
         BotState::s_hazardNode = nullptr;
@@ -964,6 +1105,7 @@ class $modify(AIBotPlayer, PlayerObject) {
             BotState::s_naturalClickCooldownTicks = 0;
         }
         float currentPercent = pl ? pl->getCurrentPercent() : 0.0f;
+        BotState::noteBotLevelProgress(currentPercent);
         int deathFrame = BotState::s_currentFrame;
         int mutationWindow = (int)Mod::get()->getSettingValue<int64_t>("learning-rate");
         bool hasPracticeCheckpoint = pl && pl->m_isPracticeMode && pl->m_checkpointArray &&
@@ -1191,4 +1333,3 @@ $on_mod(Loaded) {
         }
     });
 }
-
