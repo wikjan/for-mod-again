@@ -31,7 +31,7 @@ struct LearnedSegment {
     std::vector<TrailPoint> bestTrajectory;
 };
 
-constexpr size_t NEURAL_INPUTS = 8;
+constexpr size_t NEURAL_INPUTS = 12;
 struct NeuralSample {
     std::array<float, NEURAL_INPUTS> features{};
     bool hold = false;
@@ -102,6 +102,7 @@ namespace BotState {
     inline size_t s_activeNeurons = 0;
     inline size_t s_activeSynapses = 0;
     inline float s_meanActivation = 0.0f;
+    inline float s_neuralMonitorRefreshSeconds = 0.0f;
     inline std::vector<std::array<float, NEURAL_INPUTS>> s_neuralWeights;
     inline std::vector<float> s_neuralBiases;
     inline std::vector<float> s_neuralOutputWeights;
@@ -161,7 +162,12 @@ namespace BotState {
         float nearestDx = 1.0f;
         float nearestDy = 0.0f;
         float nearestVerticalGap = 0.0f;
+        float secondDistance = 10000.0f;
+        float secondDx = 1.0f;
+        float secondDy = 0.0f;
+        float secondVerticalGap = 0.0f;
         bool foundHazard = false;
+        bool foundSecondHazard = false;
         for (auto const& rect : s_hazardRects) {
             auto playerLeft = playerRect.origin.x;
             auto playerRight = playerLeft + playerRect.size.width;
@@ -173,18 +179,30 @@ namespace BotState {
             auto hazardTop = hazardBottom + rect.size.height;
             if (hazardRight < playerLeft - 30.0f || hazardLeft > playerRight + 300.0f) continue;
             auto edgeDx = hazardLeft - playerRight;
+            auto centerDy = (rect.origin.y + rect.size.height * 0.5f - position.y) / 200.0f;
+            float verticalGap = 0.0f;
+            if (hazardBottom > playerTop) {
+                verticalGap = hazardBottom - playerTop;
+            } else if (playerBottom > hazardTop) {
+                verticalGap = hazardTop - playerBottom;
+            }
             if (edgeDx < nearestDistance) {
+                secondDistance = nearestDistance;
+                secondDx = nearestDx;
+                secondDy = nearestDy;
+                secondVerticalGap = nearestVerticalGap;
+                foundSecondHazard = foundHazard;
                 nearestDistance = edgeDx;
                 nearestDx = std::clamp(edgeDx / 300.0f, -0.2f, 1.0f);
-                nearestDy = std::clamp((rect.origin.y + rect.size.height * 0.5f - position.y) / 200.0f, -1.0f, 1.0f);
-                if (hazardBottom > playerTop) {
-                    nearestVerticalGap = hazardBottom - playerTop;
-                } else if (playerBottom > hazardTop) {
-                    nearestVerticalGap = hazardTop - playerBottom;
-                } else {
-                    nearestVerticalGap = 0.0f;
-                }
+                nearestDy = std::clamp(centerDy, -1.0f, 1.0f);
+                nearestVerticalGap = verticalGap;
                 foundHazard = true;
+            } else if (edgeDx < secondDistance) {
+                secondDistance = edgeDx;
+                secondDx = std::clamp(edgeDx / 300.0f, -0.2f, 1.0f);
+                secondDy = std::clamp(centerDy, -1.0f, 1.0f);
+                secondVerticalGap = verticalGap;
+                foundSecondHazard = true;
             }
         }
         features[3] = foundHazard ? nearestDx : 1.0f;
@@ -192,6 +210,10 @@ namespace BotState {
         features[5] = foundHazard ? 1.0f : 0.0f;
         features[6] = s_practiceMode ? 1.0f : 0.0f;
         features[7] = foundHazard ? std::clamp(nearestVerticalGap / 200.0f, -1.0f, 1.0f) : 0.0f;
+        features[8] = foundSecondHazard ? secondDx : 1.0f;
+        features[9] = foundSecondHazard ? secondDy : 0.0f;
+        features[10] = foundSecondHazard ? std::clamp(secondVerticalGap / 200.0f, -1.0f, 1.0f) : 0.0f;
+        features[11] = foundSecondHazard ? 1.0f : 0.0f;
         return features;
     }
 
@@ -870,6 +892,15 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         auto playerRect = this->m_player1->getObjectRect();
         auto position = ccp(playerRect.origin.x + playerRect.size.width * 0.5f,
                             playerRect.origin.y + playerRect.size.height * 0.5f);
+        if (BotState::s_enabled && dt > 0.0f) {
+            BotState::s_neuralMonitorRefreshSeconds += dt;
+            if (BotState::s_neuralMonitorRefreshSeconds >= 0.25f) {
+                BotState::s_neuralMonitorRefreshSeconds = 0.0f;
+                // Refresh the monitor from the current state even while the
+                // bot is replaying a remembered path and makes no neural call.
+                BotState::neuralPrediction(BotState::neuralFeatures(playerRect, progress));
+            }
+        }
         if (!BotState::s_enabled) {
             // Visual tracking must continue when the AI is turned off from
             // the pause menu; only input control is disabled in this state.
