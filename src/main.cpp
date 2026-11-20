@@ -113,7 +113,7 @@ namespace BotState {
         int limit = (int)Mod::get()->getSettingValue<int64_t>("input-memory-ticks");
         limit = std::clamp(limit, 30000, 250000);
         int budgetMb = (int)Mod::get()->getSettingValue<int64_t>("memory-budget-mb");
-        budgetMb = std::clamp(budgetMb, 1, 50);
+        budgetMb = std::clamp(budgetMb, 1, 100);
         // Reserve for the best/current/candidate input and trajectory vectors,
         // including their temporary copies during a new best run.
         constexpr size_t estimatedBytesPerTick =
