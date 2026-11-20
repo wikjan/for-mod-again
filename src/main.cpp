@@ -197,7 +197,9 @@ namespace BotState {
             // activations keep the output layer numerically stable.
             auto activation = std::clamp(sum, -1.0f, 1.0f);
             activationTotal += std::abs(activation);
-            if (std::abs(activation) >= 0.25f) ++activeNeurons;
+            // Count lower but meaningful firing levels so small early weights
+            // still produce visible spike activity in the HUD.
+            if (std::abs(activation) >= 0.05f) ++activeNeurons;
             if (activations) activations->push_back(activation);
             auto outputWeight = s_neuralOutputWeights[i];
             ++synapseCount;
@@ -728,27 +730,27 @@ class $modify(AIBotPlayLayer, PlayLayer) {
         auto neuralTitle = CCLabelBMFont::create("NEURAL ACTIVITY", "chatFont.fnt");
         neuralTitle->setScale(0.42f);
         neuralTitle->setAnchorPoint(ccp(1.0f, 0.5f));
-        neuralTitle->setPosition(ccp(winSize.width - 12.0f, 0.0f));
+        neuralTitle->setPosition(ccp(winSize.width - 162.0f, 0.0f));
         hudNode->addChild(neuralTitle);
 
         auto neuralMonitor = CCLabelBMFont::create("SPIKES: 0 / 0   SYNAPSES: 0 / 0   MEAN: 0%", "chatFont.fnt");
         neuralMonitor->setScale(0.34f);
         neuralMonitor->setAnchorPoint(ccp(1.0f, 0.5f));
-        neuralMonitor->setPosition(ccp(winSize.width - 12.0f, -12.0f));
+        neuralMonitor->setPosition(ccp(winSize.width - 162.0f, -12.0f));
         hudNode->addChild(neuralMonitor);
         BotState::s_neuralMonitorLabel = neuralMonitor;
 
         auto levelTimer = CCLabelBMFont::create("BOT ACTIVE: 00:00", "chatFont.fnt");
         levelTimer->setScale(0.38f);
         levelTimer->setAnchorPoint(ccp(1.0f, 0.5f));
-        levelTimer->setPosition(ccp(winSize.width - 12.0f, -25.0f));
+        levelTimer->setPosition(ccp(winSize.width - 162.0f, -25.0f));
         hudNode->addChild(levelTimer);
         BotState::s_levelTimeLabel = levelTimer;
 
         auto levelBest = CCLabelBMFont::create("LEVEL BEST: 0.0%", "chatFont.fnt");
         levelBest->setScale(0.38f);
         levelBest->setAnchorPoint(ccp(1.0f, 0.5f));
-        levelBest->setPosition(ccp(winSize.width - 12.0f, -38.0f));
+        levelBest->setPosition(ccp(winSize.width - 162.0f, -38.0f));
         levelBest->setColor(ccc3(255, 214, 90));
         hudNode->addChild(levelBest);
         BotState::s_levelBestLabel = levelBest;
