@@ -11,8 +11,6 @@
 #include <cstdint>
 #include <array>
 #include <string>
-#include <thread>
-#include <utility>
 
 using namespace geode::prelude;
 
@@ -38,13 +36,6 @@ struct NeuralSample {
     std::array<float, NEURAL_INPUTS> features{};
     bool hold = false;
     bool exploratory = false;
-};
-
-struct NeuralTrainingModel {
-    std::vector<std::array<float, NEURAL_INPUTS>> weights;
-    std::vector<float> biases;
-    std::vector<float> outputWeights;
-    float outputBias = 0.0f;
 };
 
 namespace BotState {
@@ -120,6 +111,7 @@ namespace BotState {
     inline std::vector<std::array<float, NEURAL_INPUTS>> s_neuralWeights;
     inline std::vector<float> s_neuralBiases;
     inline std::vector<float> s_neuralOutputWeights;
+    inline std::vector<float> s_neuralActivationsScratch;
     inline std::vector<NeuralSample> s_neuralSamples;
     inline float s_neuralOutputBias = 0.0f;
 
@@ -198,6 +190,7 @@ namespace BotState {
         s_neuralWeights.assign(count, {});
         s_neuralBiases.assign(count, 0.0f);
         s_neuralOutputWeights.assign(count, 0.0f);
+        s_neuralActivationsScratch.resize(count);
         for (int neuron = 0; neuron < count; ++neuron) {
             for (auto& weight : s_neuralWeights[(size_t)neuron]) {
                 weight = ((float)(nextExploreRandom() % 2001u) / 1000.0f - 1.0f) * 0.08f;
@@ -322,31 +315,20 @@ namespace BotState {
         return sigmoid(output);
     }
 
-    void trainNeuralSample(NeuralTrainingModel& model, NeuralSample const& sample, float learningRate,
-                           std::vector<float>& activations) {
-        float output = model.outputBias;
-        for (size_t i = 0; i < model.weights.size(); ++i) {
-            float sum = model.biases[i];
-            for (size_t j = 0; j < NEURAL_INPUTS; ++j) {
-                sum += model.weights[i][j] * sample.features[j];
-            }
-            activations[i] = std::clamp(sum, -1.0f, 1.0f);
-            output += model.outputWeights[i] * activations[i];
-        }
-        output = std::clamp(output, -16.0f, 16.0f);
-        auto prediction = 1.0f / (1.0f + std::exp(-output));
+    void trainNeuralSample(NeuralSample const& sample, float learningRate) {
+        auto prediction = neuralPrediction(sample.features, &s_neuralActivationsScratch);
         float target = sample.hold ? 1.0f : 0.0f;
         float outputDelta = target - prediction;
-        model.outputBias += learningRate * outputDelta;
-        for (size_t i = 0; i < activations.size(); ++i) {
-            auto activation = activations[i];
+        s_neuralOutputBias += learningRate * outputDelta;
+        for (size_t i = 0; i < s_neuralActivationsScratch.size(); ++i) {
+            auto activation = s_neuralActivationsScratch[i];
             auto derivative = std::abs(activation) < 1.0f ? 1.0f : 0.0f;
-            auto hiddenDelta = outputDelta * model.outputWeights[i] * derivative;
-            model.outputWeights[i] += learningRate * outputDelta * activation;
+            auto hiddenDelta = outputDelta * s_neuralOutputWeights[i] * derivative;
+            s_neuralOutputWeights[i] += learningRate * outputDelta * activation;
             for (size_t j = 0; j < NEURAL_INPUTS; ++j) {
-                model.weights[i][j] += learningRate * hiddenDelta * sample.features[j];
+                s_neuralWeights[i][j] += learningRate * hiddenDelta * sample.features[j];
             }
-            model.biases[i] += learningRate * hiddenDelta;
+            s_neuralBiases[i] += learningRate * hiddenDelta;
         }
     }
 
@@ -358,12 +340,10 @@ namespace BotState {
         constexpr size_t maxTrainingWork = 3200000;
         auto workPerSample = std::max<size_t>(1, s_neuralWeights.size() * (NEURAL_INPUTS * 2 + 2));
         auto sampleBudget = std::clamp<size_t>(maxTrainingWork / workPerSample, 1, 256);
-        std::vector<std::pair<NeuralSample, float>> trainingBatch;
-        trainingBatch.reserve(sampleBudget);
         if (improved) {
             auto stride = std::max<size_t>(1, (s_neuralSamples.size() + sampleBudget - 1) / sampleBudget);
             for (size_t i = 0; i < s_neuralSamples.size(); i += stride) {
-                trainingBatch.emplace_back(s_neuralSamples[i], 0.003f);
+                trainNeuralSample(s_neuralSamples[i], 0.003f);
             }
         } else {
             // Train on the newest exploratory decisions first, up to the same
@@ -375,71 +355,8 @@ namespace BotState {
                 if (!s_neuralSamples[i].exploratory) continue;
                 auto alternative = s_neuralSamples[i];
                 alternative.hold = !alternative.hold;
-                trainingBatch.emplace_back(alternative, 0.001f);
+                trainNeuralSample(alternative, 0.001f);
                 ++trained;
-            }
-        }
-        if (trainingBatch.empty()) return;
-
-        auto configuredThreads = (int)Mod::get()->getSettingValue<int64_t>("training-threads");
-        auto hardwareThreads = std::max(1u, std::thread::hardware_concurrency());
-        auto threadCount = std::clamp(configuredThreads, 1, 16);
-        threadCount = std::min(threadCount, (int)hardwareThreads);
-        threadCount = std::min(threadCount, (int)trainingBatch.size());
-
-        auto bytesPerModel = s_neuralWeights.size() *
-            (sizeof(std::array<float, NEURAL_INPUTS>) + 2 * sizeof(float));
-        constexpr size_t maxParallelModelMemory = 64u * 1024u * 1024u;
-        auto modelCopiesAvailable = bytesPerModel == 0 ? 1u : maxParallelModelMemory / bytesPerModel;
-        // Keep one extra copy for the starting model used to seed each worker.
-        threadCount = std::min(threadCount, std::max(1, (int)modelCopiesAvailable - 1));
-
-        NeuralTrainingModel initial{
-            s_neuralWeights, s_neuralBiases, s_neuralOutputWeights, s_neuralOutputBias
-        };
-        if (threadCount == 1) {
-            std::vector<float> activations(initial.weights.size());
-            for (auto const& item : trainingBatch) {
-                trainNeuralSample(initial, item.first, item.second, activations);
-            }
-            s_neuralWeights = std::move(initial.weights);
-            s_neuralBiases = std::move(initial.biases);
-            s_neuralOutputWeights = std::move(initial.outputWeights);
-            s_neuralOutputBias = initial.outputBias;
-            return;
-        }
-        std::vector<NeuralTrainingModel> models((size_t)threadCount, initial);
-        std::vector<std::jthread> workers;
-        workers.reserve((size_t)threadCount);
-        for (int worker = 0; worker < threadCount; ++worker) {
-            auto first = trainingBatch.size() * (size_t)worker / (size_t)threadCount;
-            auto last = trainingBatch.size() * (size_t)(worker + 1) / (size_t)threadCount;
-            workers.emplace_back([&, worker, first, last] {
-                auto& model = models[(size_t)worker];
-                std::vector<float> activations(model.weights.size());
-                for (auto i = first; i < last; ++i) {
-                    trainNeuralSample(model, trainingBatch[i].first, trainingBatch[i].second, activations);
-                }
-            });
-        }
-        for (auto& worker : workers) worker.join();
-
-        // Each worker learns from a disjoint batch against the same starting
-        // network. Average their models on the game thread to avoid races with
-        // live predictions and keep all Cocos/Geode calls off worker threads.
-        float scale = 1.0f / (float)threadCount;
-        s_neuralOutputBias = 0.0f;
-        for (auto const& model : models) s_neuralOutputBias += model.outputBias * scale;
-        for (size_t i = 0; i < s_neuralWeights.size(); ++i) {
-            s_neuralBiases[i] = 0.0f;
-            s_neuralOutputWeights[i] = 0.0f;
-            for (size_t j = 0; j < NEURAL_INPUTS; ++j) s_neuralWeights[i][j] = 0.0f;
-            for (auto const& model : models) {
-                s_neuralBiases[i] += model.biases[i] * scale;
-                s_neuralOutputWeights[i] += model.outputWeights[i] * scale;
-                for (size_t j = 0; j < NEURAL_INPUTS; ++j) {
-                    s_neuralWeights[i][j] += model.weights[i][j] * scale;
-                }
             }
         }
     }

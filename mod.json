@@ -70,14 +70,6 @@
             "min": 64,
             "max": 200000
         },
-        "training-threads": {
-            "name": "Watki treningu AI",
-            "description": "Liczba watkow CPU uzywanych do rownoleglego uczenia AI po smierci. Watek gry nadal obsluguje fizyke i rysowanie.",
-            "type": "int",
-            "default": 4,
-            "min": 1,
-            "max": 16
-        },
         "memory-budget-mb": {
             "name": "Budzet pamieci AI (MB)",
             "description": "Przyblizony limit danych tras AI. Biezaca trajektoria usuwa najstarsze probki po osiagnieciu limitu, aby zapisywac nowe.",
